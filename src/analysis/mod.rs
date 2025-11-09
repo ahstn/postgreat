@@ -3,6 +3,7 @@ pub mod concurrency;
 pub mod logging;
 pub mod memory;
 pub mod planner;
+pub mod table_index;
 pub mod wal;
 
 use crate::models::PgConfigParam;

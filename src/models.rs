@@ -66,6 +66,8 @@ pub enum ConfigCategory {
     Autovacuum,
     /// Logging and diagnostics
     Logging,
+    /// Table and index health checks
+    TableIndex,
 }
 
 impl ConfigCategory {
@@ -77,6 +79,7 @@ impl ConfigCategory {
             ConfigCategory::Planner => "Query Planner Cost Model",
             ConfigCategory::Autovacuum => "Autovacuum Configuration",
             ConfigCategory::Logging => "Logging and Diagnostics",
+            ConfigCategory::TableIndex => "Table and Index Health",
         }
     }
 }
@@ -89,16 +92,56 @@ pub struct TableBloatInfo {
     pub live_tuples: i64,
     pub dead_tuples: i64,
     pub dead_tup_ratio: f64,
+    pub seq_scan: i64,
+    pub idx_scan: i64,
+    pub table_size_bytes: i64,
+    pub table_size_pretty: String,
+    pub last_autovacuum: Option<String>,
+    pub last_autoanalyze: Option<String>,
+    pub seconds_since_last_autovacuum: Option<f64>,
+    pub seconds_since_last_autoanalyze: Option<f64>,
 }
 
 /// Represents an index usage analysis
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IndexUsageInfo {
+    pub issue: IndexIssueKind,
     pub schema: String,
     pub table_name: String,
     pub index_name: String,
-    pub index_size: String,
+    pub index_size_bytes: i64,
+    pub index_size_pretty: String,
     pub scans: i64,
+    pub tuples_read: i64,
+    pub tuples_fetched: i64,
+    pub avg_tuples_per_scan: f64,
+    pub heap_fetch_ratio: f64,
+    pub table_live_tup: Option<i64>,
+    pub is_unique: bool,
+    pub enforces_constraint: bool,
+    pub is_expression: bool,
+    pub is_partial: bool,
+}
+
+/// Represents sequential scan hotspots that likely require new indexes
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TableSeqScanInfo {
+    pub schema: String,
+    pub table_name: String,
+    pub seq_scan: i64,
+    pub idx_scan: i64,
+    pub live_tuples: i64,
+    pub table_size_bytes: i64,
+    pub table_size_pretty: String,
+}
+
+/// Types of index issues detected during analysis
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum IndexIssueKind {
+    Unused,
+    LowSelectivity,
+    FailedIndexOnly,
 }
 
 /// Represents system statistics
@@ -121,7 +164,9 @@ pub struct AnalysisResults {
     pub suggestions_by_category: HashMap<ConfigCategory, Vec<ConfigSuggestion>>,
     /// Table bloat information
     pub bloat_info: Vec<TableBloatInfo>,
-    /// Index usage information
+    /// Sequential scan hotspots
+    pub seq_scan_info: Vec<TableSeqScanInfo>,
+    /// Index usage information (unused/inefficient/etc.)
     pub index_usage_info: Vec<IndexUsageInfo>,
     /// System statistics
     pub system_stats: SystemStats,
@@ -137,6 +182,7 @@ impl AnalysisResults {
                 .extend(suggestions);
         }
         self.bloat_info.extend(other.bloat_info);
+        self.seq_scan_info.extend(other.seq_scan_info);
         self.index_usage_info.extend(other.index_usage_info);
         self.system_stats = other.system_stats;
     }

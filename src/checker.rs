@@ -1,4 +1,4 @@
-use crate::analysis::{autovacuum, concurrency, logging, memory, planner, wal};
+use crate::analysis::{autovacuum, concurrency, logging, memory, planner, table_index, wal};
 use crate::config::DbConfig;
 use crate::models::{AnalysisResults, PgConfigParam, SystemStats};
 use snafu::{ResultExt, Snafu};
@@ -76,6 +76,11 @@ impl ConfigChecker {
 
         info!("Running logging analysis...");
         logging::analyze_logging(&params_snapshot, &stats_snapshot, &mut results)?;
+
+        info!("Running table and index health analysis...");
+        if let Err(err) = table_index::analyze_table_index_health(&self.pool, &mut results).await {
+            warn!("Table/index health analysis skipped: {err}");
+        }
 
         Ok(results)
     }

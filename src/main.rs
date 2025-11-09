@@ -29,7 +29,7 @@ enum Commands {
     Analyze {
         /// Database host
         #[arg(
-            short = 'h',
+            short = 'H',
             long = "host",
             env = "POSTGRES_HOST",
             default_value = "localhost"
@@ -37,12 +37,7 @@ enum Commands {
         host: String,
 
         /// Database port
-        #[arg(
-            short = 'p',
-            long = "port",
-            env = "POSTGRES_PORT",
-            default_value = "5432"
-        )]
+        #[arg(long = "port", env = "POSTGRES_PORT", default_value = "5432")]
         port: u16,
 
         /// Database name
@@ -54,7 +49,7 @@ enum Commands {
         username: String,
 
         /// Password
-        #[arg(short = 'P', long = "password", env = "POSTGRES_PASSWORD")]
+        #[arg(short = 'p', long = "password", env = "POSTGRES_PASSWORD")]
         password: String,
 
         /// Compute spec (required for hardware-aware recommendations)

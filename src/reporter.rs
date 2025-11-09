@@ -1,4 +1,6 @@
-use crate::models::{AnalysisResults, ConfigCategory, ConfigSuggestion, SuggestionLevel};
+use crate::models::{
+    AnalysisResults, ConfigCategory, ConfigSuggestion, IndexIssueKind, SuggestionLevel,
+};
 use clap::ValueEnum;
 use snafu::{ResultExt, Snafu};
 use std::collections::HashMap;
@@ -185,6 +187,14 @@ impl Reporter {
             writeln!(handle).context(OutputSnafu)?;
         }
 
+        // Table & Index health summary
+        if !results.bloat_info.is_empty()
+            || !results.seq_scan_info.is_empty()
+            || !results.index_usage_info.is_empty()
+        {
+            self.write_table_index_markdown(&mut handle, results)?;
+        }
+
         // System configuration table
         writeln!(handle, "---\n").context(OutputSnafu)?;
         writeln!(handle, "## Current Configuration\n").context(OutputSnafu)?;
@@ -367,6 +377,58 @@ impl Reporter {
             }
         }
 
+        if !results.bloat_info.is_empty() {
+            writeln!(handle, "Table Bloat Watchlist:").context(OutputSnafu)?;
+            for table in &results.bloat_info {
+                writeln!(
+                    handle,
+                    "  - {}.{}: {:.1}% dead tuples (last autovacuum: {})",
+                    table.schema,
+                    table.table_name,
+                    table.dead_tup_ratio * 100.0,
+                    table.last_autovacuum.as_deref().unwrap_or("never")
+                )
+                .context(OutputSnafu)?;
+            }
+            writeln!(handle).context(OutputSnafu)?;
+        }
+
+        if !results.seq_scan_info.is_empty() {
+            writeln!(handle, "Sequential Scan Hotspots:").context(OutputSnafu)?;
+            for table in &results.seq_scan_info {
+                writeln!(
+                    handle,
+                    "  - {}.{}: {} seq vs {} idx scans ({} rows, {})",
+                    table.schema,
+                    table.table_name,
+                    table.seq_scan,
+                    table.idx_scan,
+                    table.live_tuples,
+                    table.table_size_pretty
+                )
+                .context(OutputSnafu)?;
+            }
+            writeln!(handle).context(OutputSnafu)?;
+        }
+
+        if !results.index_usage_info.is_empty() {
+            writeln!(handle, "Index Findings:").context(OutputSnafu)?;
+            for index in &results.index_usage_info {
+                writeln!(
+                    handle,
+                    "  - [{}] {}.{} on {}.{} ({})",
+                    self.format_issue_name(&index.issue),
+                    index.schema,
+                    index.index_name,
+                    index.schema,
+                    index.table_name,
+                    index.index_size_pretty
+                )
+                .context(OutputSnafu)?;
+            }
+            writeln!(handle).context(OutputSnafu)?;
+        }
+
         Ok(())
     }
 
@@ -377,5 +439,145 @@ impl Reporter {
             SuggestionLevel::Recommended => "REC",
             SuggestionLevel::Info => "INFO",
         }
+    }
+
+    fn write_table_index_markdown(
+        &self,
+        handle: &mut std::io::StdoutLock,
+        results: &AnalysisResults,
+    ) -> Result<()> {
+        use std::io::Write;
+
+        writeln!(handle, "## Table & Index Health\n").context(OutputSnafu)?;
+
+        if !results.bloat_info.is_empty() {
+            writeln!(handle, "### Table Bloat Watchlist\n").context(OutputSnafu)?;
+            writeln!(
+                handle,
+                "| Table | Dead % | Dead Tuples | Live Tuples | Last Autovacuum | Size |"
+            )
+            .context(OutputSnafu)?;
+            writeln!(
+                handle,
+                "|-------|--------|-------------|-------------|-----------------|------|"
+            )
+            .context(OutputSnafu)?;
+
+            for table in &results.bloat_info {
+                writeln!(
+                    handle,
+                    "| {}.{} | {:.1}% | {} | {} | {} | {} |",
+                    table.schema,
+                    table.table_name,
+                    table.dead_tup_ratio * 100.0,
+                    table.dead_tuples,
+                    table.live_tuples,
+                    table.last_autovacuum.as_deref().unwrap_or("never"),
+                    table.table_size_pretty
+                )
+                .context(OutputSnafu)?;
+            }
+            writeln!(handle).context(OutputSnafu)?;
+        }
+
+        if !results.seq_scan_info.is_empty() {
+            writeln!(handle, "### Sequential Scan Hotspots\n").context(OutputSnafu)?;
+            writeln!(
+                handle,
+                "| Table | Seq Scans | Idx Scans | Live Tuples | Size |"
+            )
+            .context(OutputSnafu)?;
+            writeln!(
+                handle,
+                "|-------|-----------|-----------|-------------|------|"
+            )
+            .context(OutputSnafu)?;
+
+            for table in &results.seq_scan_info {
+                writeln!(
+                    handle,
+                    "| {}.{} | {} | {} | {} | {} |",
+                    table.schema,
+                    table.table_name,
+                    table.seq_scan,
+                    table.idx_scan,
+                    table.live_tuples,
+                    table.table_size_pretty
+                )
+                .context(OutputSnafu)?;
+            }
+            writeln!(handle).context(OutputSnafu)?;
+        }
+
+        if !results.index_usage_info.is_empty() {
+            writeln!(handle, "### Index Findings\n").context(OutputSnafu)?;
+            for issue in [
+                IndexIssueKind::Unused,
+                IndexIssueKind::LowSelectivity,
+                IndexIssueKind::FailedIndexOnly,
+            ] {
+                let group: Vec<_> = results
+                    .index_usage_info
+                    .iter()
+                    .filter(|idx| idx.issue == issue)
+                    .collect();
+                if group.is_empty() {
+                    continue;
+                }
+
+                writeln!(handle, "#### {}\n", self.format_issue_name(&issue))
+                    .context(OutputSnafu)?;
+                writeln!(handle, "| Index | Table | Scans | Size | Notes |")
+                    .context(OutputSnafu)?;
+                writeln!(handle, "|-------|-------|-------|------|-------|")
+                    .context(OutputSnafu)?;
+
+                for idx in group {
+                    let notes = match idx.issue {
+                        IndexIssueKind::Unused => "never scanned".to_string(),
+                        IndexIssueKind::LowSelectivity => {
+                            let percentage = selectivity_ratio(idx) * 100.0;
+                            format!("~{:.1}% of table per scan", percentage.min(100.0))
+                        }
+                        IndexIssueKind::FailedIndexOnly => {
+                            format!("{:.0}% heap fetch ratio", idx.heap_fetch_ratio * 100.0)
+                        }
+                    };
+
+                    writeln!(
+                        handle,
+                        "| {}.{} | {}.{} | {} | {} | {} |",
+                        idx.schema,
+                        idx.index_name,
+                        idx.schema,
+                        idx.table_name,
+                        idx.scans,
+                        idx.index_size_pretty,
+                        notes
+                    )
+                    .context(OutputSnafu)?;
+                }
+                writeln!(handle).context(OutputSnafu)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn format_issue_name(&self, issue: &IndexIssueKind) -> &str {
+        match issue {
+            IndexIssueKind::Unused => "Unused",
+            IndexIssueKind::LowSelectivity => "Low Selectivity",
+            IndexIssueKind::FailedIndexOnly => "Failed Index-Only",
+        }
+    }
+}
+
+fn selectivity_ratio(index: &crate::models::IndexUsageInfo) -> f64 {
+    let table_rows = index.table_live_tup.unwrap_or(0) as f64;
+    if table_rows <= 0.0 {
+        0.0
+    } else {
+        index.avg_tuples_per_scan / table_rows
     }
 }
