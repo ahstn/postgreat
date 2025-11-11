@@ -17,9 +17,10 @@ The performance and stability of a PostgreSQL instance are predominantly dictate
   - [max_parallel_workers_per_gather](#4-maintenance_work_mem)
 - [C. Query Planner Cost Model (Storage-Dependent)](#c-query-planner-cost-model-storage-dependent)
   - [random_page_cost](#1-random_page_cost)
-  - [effective_io_concurrency](#2-effective_io_concurrency) 
+  - [effective_io_concurrency](#2-effective_io_concurrency)
 - [D. Checkpoint and Write-Ahead Log (WAL) Management](#d-checkpoint-and-write-ahead-log-wal-management)
   - [max_wal_size & min_wal_size](#1-max_wal_size--min_wal_size)
+- [References](#references)
 
 ## A. Memory Allocation Strategy (RAM-Dependent)
 
@@ -115,8 +116,8 @@ These settings control how many processes PostgreSQL can use, both for client co
     - This parameter limits the "blast radius" of a single runaway query.
     - **Recommendation:** Set this to half the number of vCPUs.[17] This allows at least two complex queries to run fully in parallel, or one to run while leaving other workers free for smaller parallel tasks.
 - **Tier-Based Examples:**
-    - **Small (2 vCPU):** `max_parallel_workers_per_gather = 1` 
-    - **Medium (8 vCPU):** `max_parallel_workers_per_gather = 4` 
+    - **Small (2 vCPU):** `max_parallel_workers_per_gather = 1`
+    - **Medium (8 vCPU):** `max_parallel_workers_per_gather = 4`
     - **Large (32 vCPU):** `max_parallel_workers_per_gather = 16`
 
 ## C. Query Planner Cost Model (Storage-Dependent)
@@ -159,6 +160,19 @@ Tuning the WAL and checkpoint process is essential for managing I/O, particularl
     - **Small (16 GiB RAM):** `max_wal_size = 4GB`
     - **Medium (64 GiB RAM):** `max_wal_size = 16GB`
     - **Large (256 GiB RAM):** `max_wal_size = 32GB`
+
+## References
+
+- [Tuning max_wal_size in PostgreSQL - EDB Postgres][21]
+- [Postgres 12 Tuning Configuration for heavily transaction server, have I set values too low?][22]
+- [04 - PostgreSQL 17 Performance Tuning: Checkpoints Explained | by Jeyaram Ayyalusamy][23]
+- [PostgreSQL High Checkpoint Time - Doctor Droid][24]
+- [Documentation: 18: 28.5. WAL Configuration - PostgreSQL][25]
+- [PostgreSQL: Experiences and tuning recommendations on Linux on IBM Z][26]
+- [PostgreSQL Performance Tuning Settings - Vlad Mihalcea][27]
+- [Tuning PostgreSQL performance for SSD | Frederik Himpe][28]
+- [Tuning the PostgreSQL “effective_io_concurrency” Parameter ...][29]
+- [PostgreSQL Tips, Tricks, and Tuning - Andrew Atkinson][30]
 
 [1]: https://www.percona.com/blog/tuning-postgresql-database-parameters-to-optimize-performance/
 [2]: https://aws.amazon.com/compare/the-difference-between-olap-and-oltp/
