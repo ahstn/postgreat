@@ -1,3 +1,4 @@
 [tools]
 "github:moby/buildkit" = "latest"
+prek = "latest"
 rust = "latest"
