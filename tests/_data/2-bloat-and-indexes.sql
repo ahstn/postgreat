@@ -95,3 +95,57 @@ BEGIN
         ORDER BY total_payment DESC;
     END LOOP;
 END $$;
+
+-- ==================================================================
+-- 6. Another Complex Query (Window Functions & CTEs)
+-- ==================================================================
+-- Analyzes actor performance and category trends using CTEs and Window Functions.
+-- This forces sort operations and multiple scans.
+
+DO $$
+BEGIN
+    FOR i IN 1..5 LOOP
+        PERFORM *
+        FROM (
+            WITH actor_rentals AS (
+                -- Calculate total rentals for each actor per category
+                SELECT
+                    a.actor_id,
+                    a.first_name,
+                    a.last_name,
+                    c.name AS category_name,
+                    COUNT(r.rental_id) as rental_count
+                FROM actor a
+                JOIN film_actor fa ON a.actor_id = fa.actor_id
+                JOIN film f ON fa.film_id = f.film_id
+                JOIN film_category fc ON f.film_id = fc.film_id
+                JOIN category c ON fc.category_id = c.category_id
+                JOIN inventory i ON f.film_id = i.film_id
+                JOIN rental r ON i.inventory_id = r.inventory_id
+                GROUP BY a.actor_id, a.first_name, a.last_name, c.name
+            ),
+            category_stats AS (
+                -- Calculate average rentals per category
+                SELECT
+                    category_name,
+                    AVG(rental_count) as avg_category_rentals
+                FROM actor_rentals
+                GROUP BY category_name
+            )
+            SELECT
+                ar.first_name,
+                ar.last_name,
+                ar.category_name,
+                ar.rental_count,
+                cs.avg_category_rentals,
+                -- Rank actors within each category
+                RANK() OVER (PARTITION BY ar.category_name ORDER BY ar.rental_count DESC) as actor_rank,
+                -- Calculate how far above/below average they are
+                (ar.rental_count - cs.avg_category_rentals) as diff_from_avg
+            FROM actor_rentals ar
+            JOIN category_stats cs ON ar.category_name = cs.category_name
+            WHERE ar.rental_count > 5
+            ORDER BY ar.category_name, actor_rank
+        ) as complex_analysis;
+    END LOOP;
+END $$;
