@@ -1,3 +1,4 @@
+use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 use snafu::{ResultExt, Snafu};
 use std::fs;
@@ -22,6 +23,26 @@ pub struct DbConfig {
     pub username: String,
     pub password: String,
     pub compute: Option<ComputeSpec>,
+    #[serde(default)]
+    pub storage_type: StorageType,
+    #[serde(default)]
+    pub workload_type: WorkloadType,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default, ValueEnum)]
+#[serde(rename_all = "lowercase")]
+pub enum StorageType {
+    #[default]
+    Ssd,
+    Hdd,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default, ValueEnum)]
+#[serde(rename_all = "lowercase")]
+pub enum WorkloadType {
+    #[default]
+    Oltp,
+    Olap,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -40,6 +61,8 @@ impl DbConfig {
         username: String,
         password: String,
         compute: Option<String>,
+        storage_type: StorageType,
+        workload_type: WorkloadType,
     ) -> Self {
         let compute_spec = compute
             .map(|c| ComputeSpec::from_string(&c))
@@ -56,6 +79,8 @@ impl DbConfig {
             username,
             password,
             compute: compute_spec,
+            storage_type,
+            workload_type,
         }
     }
 

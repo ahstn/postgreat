@@ -142,11 +142,26 @@ impl ConfigChecker {
             Err(err) => warn!("Failed to read pg_stat_activity for connection count: {err}"),
         }
 
+        // Fetch checkpoint stats for WAL analysis
+        match sqlx::query("SELECT checkpoints_timed, checkpoints_req FROM pg_stat_bgwriter")
+            .fetch_one(&self.pool)
+            .await
+        {
+            Ok(row) => {
+                stats.checkpoints_timed = row.try_get("checkpoints_timed").ok();
+                stats.checkpoints_req = row.try_get("checkpoints_req").ok();
+            }
+            Err(err) => warn!("Failed to read pg_stat_bgwriter: {err}"),
+        }
+
         // Use provided compute spec if available
         if let Some(compute) = &self.config.compute {
             stats.total_memory_gb = Some(compute.memory_gb as f64);
             stats.cpu_count = Some(compute.vcpu);
         }
+
+        stats.storage_type = self.config.storage_type;
+        stats.workload_type = self.config.workload_type;
 
         Ok(stats)
     }

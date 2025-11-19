@@ -515,6 +515,8 @@ impl Reporter {
                 IndexIssueKind::Unused,
                 IndexIssueKind::LowSelectivity,
                 IndexIssueKind::FailedIndexOnly,
+                IndexIssueKind::MissingPartialIndex,
+                IndexIssueKind::BrinCandidate,
             ] {
                 let group: Vec<_> = results
                     .index_usage_info
@@ -542,6 +544,8 @@ impl Reporter {
                         IndexIssueKind::FailedIndexOnly => {
                             format!("{:.0}% heap fetch ratio", idx.heap_fetch_ratio * 100.0)
                         }
+                        IndexIssueKind::MissingPartialIndex => "missing soft-delete partial index".to_string(),
+                        IndexIssueKind::BrinCandidate => "BRIN candidate for time-series/append-only".to_string(),
                     };
 
                     writeln!(
@@ -569,6 +573,8 @@ impl Reporter {
             IndexIssueKind::Unused => "Unused",
             IndexIssueKind::LowSelectivity => "Low Selectivity",
             IndexIssueKind::FailedIndexOnly => "Failed Index-Only",
+            IndexIssueKind::MissingPartialIndex => "Missing Partial Index",
+            IndexIssueKind::BrinCandidate => "BRIN Candidate",
         }
     }
 }
