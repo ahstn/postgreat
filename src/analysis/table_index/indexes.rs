@@ -65,7 +65,165 @@ pub(super) async fn analyze(
     add_index_suggestions(&low_selectivity_indexes, results);
     add_index_suggestions(&failed_index_only_indexes, results);
 
+    // New checks from docs/2
+    let soft_delete_candidates = fetch_soft_delete_candidates(pool).await?;
+    let missing_partial_indexes = identify_missing_partial_indexes(&soft_delete_candidates);
+    add_index_suggestions(&missing_partial_indexes, results);
+    results.index_usage_info.extend(missing_partial_indexes);
+
+    let brin_candidates = fetch_brin_candidates(pool).await?;
+    let brin_findings = identify_brin_candidates(&brin_candidates);
+    add_index_suggestions(&brin_findings, results);
+    results.index_usage_info.extend(brin_findings);
+
     Ok(())
+}
+
+#[derive(Debug)]
+struct SoftDeleteCandidate {
+    schema: String,
+    table_name: String,
+    column_name: String,
+    table_size_pretty: String,
+}
+
+async fn fetch_soft_delete_candidates(pool: &Pool<Postgres>) -> Result<Vec<SoftDeleteCandidate>, CheckerError> {
+    // Find tables with soft-delete columns that DO NOT have a partial index filtering on them
+    const QUERY: &str = r#"
+        WITH soft_delete_cols AS (
+            SELECT n.nspname, c.relname, a.attname, c.oid AS relid
+            FROM pg_attribute a
+            JOIN pg_class c ON a.attrelid = c.oid
+            JOIN pg_namespace n ON c.relnamespace = n.oid
+            WHERE a.attname IN ('is_deleted', 'deleted_at', 'archived', 'is_archived')
+              AND c.relkind = 'r'
+              AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+        ),
+        tables_with_partial_idx AS (
+            SELECT DISTINCT indrelid
+            FROM pg_index
+            WHERE indispartial = true
+        )
+        SELECT
+            s.nspname,
+            s.relname,
+            s.attname,
+            pg_size_pretty(pg_relation_size(s.relid)) as size_pretty
+        FROM soft_delete_cols s
+        LEFT JOIN tables_with_partial_idx p ON s.relid = p.indrelid
+        WHERE p.indrelid IS NULL -- Table has no partial indexes at all (simplification, but effective)
+    "#;
+
+    let rows = sqlx::query(QUERY)
+        .fetch_all(pool)
+        .await
+        .map_err(|source| CheckerError::QueryError {
+            query: QUERY.into(),
+            source,
+        })?;
+
+    let mut candidates = Vec::new();
+    for row in rows {
+        candidates.push(SoftDeleteCandidate {
+            schema: row.get("nspname"),
+            table_name: row.get("relname"),
+            column_name: row.get("attname"),
+            table_size_pretty: row.get("size_pretty"),
+        });
+    }
+    Ok(candidates)
+}
+
+fn identify_missing_partial_indexes(candidates: &[SoftDeleteCandidate]) -> Vec<IndexUsageInfo> {
+    candidates.iter().map(|c| IndexUsageInfo {
+        issue: IndexIssueKind::MissingPartialIndex,
+        schema: c.schema.clone(),
+        table_name: c.table_name.clone(),
+        index_name: format!("(missing on {})", c.column_name),
+        index_size_bytes: 0,
+        index_size_pretty: "0 B".to_string(),
+        scans: 0,
+        tuples_read: 0,
+        tuples_fetched: 0,
+        avg_tuples_per_scan: 0.0,
+        heap_fetch_ratio: 0.0,
+        table_live_tup: None,
+        is_unique: false,
+        enforces_constraint: false,
+        is_expression: false,
+        is_partial: false,
+    }).collect()
+}
+
+#[derive(Debug)]
+struct BrinCandidate {
+    schema: String,
+    table_name: String,
+    column_name: String,
+    correlation: f64,
+    table_size_pretty: String,
+}
+
+async fn fetch_brin_candidates(pool: &Pool<Postgres>) -> Result<Vec<BrinCandidate>, CheckerError> {
+    // Find large tables with highly correlated columns (good for BRIN) that are NOT the PK (usually)
+    const QUERY: &str = r#"
+        SELECT
+            s.schemaname,
+            s.tablename,
+            s.attname,
+            s.correlation,
+            pg_size_pretty(pg_relation_size(c.oid)) as size_pretty
+        FROM pg_stats s
+        JOIN pg_class c ON c.relname = s.tablename
+        JOIN pg_namespace n ON c.relnamespace = n.oid AND n.nspname = s.schemaname
+        LEFT JOIN pg_index i ON i.indrelid = c.oid AND i.indnatts = 1 -- Check if single col index exists
+        WHERE s.schemaname NOT IN ('pg_catalog', 'information_schema')
+          AND abs(s.correlation) > 0.95
+          AND pg_relation_size(c.oid) > 10000000 -- > 10MB
+          AND c.relkind = 'r'
+    "#;
+
+    let rows = sqlx::query(QUERY)
+        .fetch_all(pool)
+        .await
+        .map_err(|source| CheckerError::QueryError {
+            query: QUERY.into(),
+            source,
+        })?;
+
+    let mut candidates = Vec::new();
+    for row in rows {
+        candidates.push(BrinCandidate {
+            schema: row.get("schemaname"),
+            table_name: row.get("tablename"),
+            column_name: row.get("attname"),
+            correlation: row.get("correlation"),
+            table_size_pretty: row.get("size_pretty"),
+        });
+    }
+    Ok(candidates)
+}
+
+fn identify_brin_candidates(candidates: &[BrinCandidate]) -> Vec<IndexUsageInfo> {
+    // Filter to top candidates
+    candidates.iter().take(5).map(|c| IndexUsageInfo {
+        issue: IndexIssueKind::BrinCandidate,
+        schema: c.schema.clone(),
+        table_name: c.table_name.clone(),
+        index_name: c.column_name.clone(), // Use column name as proxy
+        index_size_bytes: 0,
+        index_size_pretty: "0 B".to_string(),
+        scans: 0,
+        tuples_read: 0,
+        tuples_fetched: 0,
+        avg_tuples_per_scan: 0.0,
+        heap_fetch_ratio: 0.0,
+        table_live_tup: None,
+        is_unique: false,
+        enforces_constraint: false,
+        is_expression: false,
+        is_partial: false,
+    }).collect()
 }
 
 async fn fetch_index_stats(pool: &Pool<Postgres>) -> Result<Vec<IndexStatRow>, CheckerError> {
@@ -274,6 +432,22 @@ fn add_index_suggestions(indexes: &[IndexUsageInfo], results: &mut AnalysisResul
                     "{} performs index scans but still fetches heap pages {:.0}% of the time. Either add the missing SELECT columns via INCLUDE or VACUUM to refresh the visibility map so index-only scans can succeed, per docs/6 section C.3.",
                     parameter,
                     index.heap_fetch_ratio * 100.0
+                ),
+            ),
+            IndexIssueKind::MissingPartialIndex => (
+                "Create partial index on soft-delete column",
+                SuggestionLevel::Important,
+                format!(
+                    "Table {}.{} has a soft-delete column but lacks a partial index. Add 'WHERE is_deleted = false' (or deleted_at IS NULL) to excludes dead rows from the index, reducing size and maintenance overhead.",
+                    index.schema, index.table_name
+                ),
+            ),
+            IndexIssueKind::BrinCandidate => (
+                "Replace B-Tree with BRIN index",
+                SuggestionLevel::Recommended,
+                format!(
+                    "Table {}.{} is large and physically ordered by {}. A BRIN index would be 100x smaller than a B-Tree while maintaining scan performance for range queries.",
+                    index.schema, index.table_name, index.index_name
                 ),
             ),
         };

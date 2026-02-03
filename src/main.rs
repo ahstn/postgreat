@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
 use postgreat::checker::ConfigChecker;
-use postgreat::config::DbConfig;
+use postgreat::config::{DbConfig, StorageType, WorkloadType};
 use postgreat::reporter::{ReportFormat, Reporter};
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -58,6 +58,14 @@ enum Commands {
             help = "Compute specification. Accepts tiers ('small'|'medium'|'large') or explicit '<vCPU>vCPU-<GB>GB' (case-insensitive)."
         )]
         compute: Option<String>,
+
+        /// Storage type
+        #[arg(long = "storage-type", value_enum, default_value = "ssd")]
+        storage_type: StorageType,
+
+        /// Workload type
+        #[arg(long = "workload-type", value_enum, default_value = "oltp")]
+        workload_type: WorkloadType,
     },
     /// Analyze multiple databases from a YAML config file
     Config {
@@ -94,10 +102,20 @@ async fn main() -> anyhow::Result<()> {
             username,
             password,
             compute,
+            storage_type,
+            workload_type,
         } => {
             info!("Analyzing database: {}", database);
-            let config =
-                DbConfig::from_connection_params(host, port, database, username, password, compute);
+            let config = DbConfig::from_connection_params(
+                host,
+                port,
+                database,
+                username,
+                password,
+                compute,
+                storage_type,
+                workload_type,
+            );
 
             let mut checker = ConfigChecker::new(config).await?;
             let results = checker.analyze().await?;

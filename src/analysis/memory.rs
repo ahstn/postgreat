@@ -28,8 +28,8 @@ fn analyze_shared_buffers(
     if let Some(spec) = get_compute_spec(stats) {
         if let Some(param) = get_param(params, "shared_buffers") {
             let current_value = param.current_value.clone();
-            let recommended_mb = (spec.memory_mb() as f64 * 0.25 / (1024.0 * 1024.0)) as u64;
-            let recommended_mb = recommended_mb.min(8192);
+            let mut recommended_mb = (spec.memory_gb as f64 * 1024.0 * 0.25).round() as u64;
+            recommended_mb = recommended_mb.min(8192);
 
             if let Some(current_mb) = param_value_as_megabytes(param) {
                 let variance =
@@ -255,4 +255,58 @@ fn add_suggestion(
         .entry(category)
         .or_default()
         .push(suggestion);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::{PgConfigParam, SystemStats};
+
+    fn create_param(value: &str) -> PgConfigParam {
+        PgConfigParam {
+            name: "test".to_string(),
+            current_value: value.to_string(),
+            default_value: None,
+            unit: Some("MB".to_string()),
+            context: "user".to_string(),
+        }
+    }
+
+    #[test]
+    fn test_shared_buffers_recommendation_16gb() {
+        let mut params = HashMap::new();
+        params.insert("shared_buffers".to_string(), create_param("128"));
+
+        let stats = SystemStats {
+            total_memory_gb: Some(16.0),
+            cpu_count: Some(4),
+            ..Default::default()
+        };
+
+        let mut results = AnalysisResults::default();
+        analyze_shared_buffers(&params, &stats, &mut results).unwrap();
+
+        let suggestion = &results.suggestions_by_category[&ConfigCategory::Memory][0];
+        // 16GB * 0.25 = 4GB = 4096MB
+        assert_eq!(suggestion.suggested_value, "4096MB");
+    }
+
+    #[test]
+    fn test_shared_buffers_recommendation_64gb() {
+        let mut params = HashMap::new();
+        params.insert("shared_buffers".to_string(), create_param("128"));
+
+        let stats = SystemStats {
+            total_memory_gb: Some(64.0),
+            cpu_count: Some(8),
+            ..Default::default()
+        };
+
+        let mut results = AnalysisResults::default();
+        analyze_shared_buffers(&params, &stats, &mut results).unwrap();
+
+        let suggestion = &results.suggestions_by_category[&ConfigCategory::Memory][0];
+        // 64GB * 0.25 = 16GB = 16384MB, but capped at 8192MB
+        assert_eq!(suggestion.suggested_value, "8192MB");
+    }
 }

@@ -1,0 +1,23 @@
+{
+    "[rust]": {
+        "editor.defaultFormatter": "rust-lang.rust-analyzer"
+    },
+    "[toml]": {
+        "editor.defaultFormatter": "tamasfe.even-better-toml"
+    },
+    "rust-analyzer.procMacro.enable": true,
+    "rust-analyzer.diagnostics.experimental.enable": false,
+    "rust-analyzer.check.workspace": true,
+    "rust-analyzer.check.command": "clippy",
+    "explorer.fileNesting.enabled": true,
+    "explorer.fileNesting.patterns": {
+        "*.ts": "${capture}.js",
+        "*.js": "${capture}.js.map, ${capture}.min.js, ${capture}.d.ts",
+        ".npmrc": ".nvmrc, .yarnrc.yml",
+        ".gitignore": ".eslintignore, .prettierignore",
+        "README.md": "CONTRIBUTING.md, CODE_OF_CONDUCT.md, SECURITY.md",
+        "Cargo.toml": "Cargo.lock",
+        "package.json": "package-lock.json, yarn.lock, pnpm-lock.yaml, pnpm-workspace.yaml",
+        "tsconfig.json": "tsconfig.*.json"
+    },
+}

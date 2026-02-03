@@ -142,6 +142,8 @@ pub enum IndexIssueKind {
     Unused,
     LowSelectivity,
     FailedIndexOnly,
+    MissingPartialIndex,
+    BrinCandidate,
 }
 
 /// Represents system statistics
@@ -153,6 +155,10 @@ pub struct SystemStats {
     pub total_memory_gb: Option<f64>,
     pub cpu_count: Option<usize>,
     pub connection_count: Option<usize>,
+    pub storage_type: crate::config::StorageType,
+    pub workload_type: crate::config::WorkloadType,
+    pub checkpoints_timed: Option<i64>,
+    pub checkpoints_req: Option<i64>,
 }
 
 /// Overall analysis results

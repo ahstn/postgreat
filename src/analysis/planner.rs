@@ -7,11 +7,11 @@ type Result<T> = std::result::Result<T, CheckerError>;
 /// Analyzes query planner cost model configuration
 pub fn analyze_planner(
     params: &HashMap<String, crate::models::PgConfigParam>,
-    _stats: &crate::models::SystemStats,
+    stats: &crate::models::SystemStats,
     results: &mut AnalysisResults,
 ) -> Result<()> {
-    analyze_random_page_cost(params, results)?;
-    analyze_effective_io_concurrency(params, results)?;
+    analyze_random_page_cost(params, stats, results)?;
+    analyze_effective_io_concurrency(params, stats, results)?;
     analyze_seq_page_cost(params, results)?;
 
     Ok(())
@@ -19,40 +19,64 @@ pub fn analyze_planner(
 
 fn analyze_random_page_cost(
     params: &HashMap<String, crate::models::PgConfigParam>,
+    stats: &crate::models::SystemStats,
     results: &mut AnalysisResults,
 ) -> Result<()> {
     let current_value = get_param_value(params, "random_page_cost");
     let current = current_value.parse::<f64>().unwrap_or(4.0);
 
-    // On SSD/NVMe, this should be 1.0 or 1.1
-    // Default of 4.0 is for HDDs and is dangerously suboptimal on modern storage
-    if current > 2.0 {
-        add_suggestion(
-            results,
-            ConfigCategory::Planner,
-            "random_page_cost",
-            &current_value,
-            "1.1",
-            if current == 4.0 {
-                SuggestionLevel::Critical
-            } else {
-                SuggestionLevel::Important
-            },
-            "random_page_cost is set for HDDs (default 4.0), but modern cloud VMs use SSD/NVMe. \
-             On SSDs, random reads are nearly as fast as sequential reads. Setting this to 1.1 \
-             (combined with high effective_cache_size) tells the planner to trust and use indexes \
-             instead of always choosing sequential scans. This is MANDATORY for modern storage.",
-        );
-    } else if current > 1.5 {
-        add_suggestion(
-            results,
-            ConfigCategory::Planner,
-            "random_page_cost",
-            &current_value,
-            "1.1",
-            SuggestionLevel::Recommended,
-            "random_page_cost could be lowered to 1.1 for better index utilization on SSD storage.",
-        );
+    // Recommendation depends on storage type
+    let (target, target_str) = match stats.storage_type {
+        crate::config::StorageType::Ssd => (1.1, "1.1"),
+        crate::config::StorageType::Hdd => (4.0, "4.0"),
+    };
+
+    if stats.storage_type == crate::config::StorageType::Ssd {
+        // For SSD, we want it low (1.1)
+        if current > 2.0 {
+            add_suggestion(
+                results,
+                ConfigCategory::Planner,
+                "random_page_cost",
+                &current_value,
+                target_str,
+                if current == 4.0 {
+                    SuggestionLevel::Critical
+                } else {
+                    SuggestionLevel::Important
+                },
+                "random_page_cost is set for HDDs (default 4.0), but you are using SSD storage. \
+                 On SSDs, random reads are nearly as fast as sequential reads. Setting this to 1.1 \
+                 (combined with high effective_cache_size) tells the planner to trust and use indexes \
+                 instead of always choosing sequential scans. This is MANDATORY for modern storage.",
+            );
+        } else if current > 1.5 {
+            add_suggestion(
+                results,
+                ConfigCategory::Planner,
+                "random_page_cost",
+                &current_value,
+                target_str,
+                SuggestionLevel::Recommended,
+                "random_page_cost could be lowered to 1.1 for better index utilization on SSD storage.",
+            );
+        }
+    } else {
+        // For HDD, we want it high (4.0)
+        if current < 3.0 {
+            add_suggestion(
+                results,
+                ConfigCategory::Planner,
+                "random_page_cost",
+                &current_value,
+                target_str,
+                SuggestionLevel::Recommended,
+                "random_page_cost is too low for HDD storage. Random I/O is much more expensive \
+                 than sequential I/O on spinning disks. Increasing this to 4.0 (the default) \
+                 prevents the planner from optimistically choosing index scans that will cause \
+                 disk thrashing.",
+            );
+        }
     }
 
     Ok(())
@@ -60,28 +84,51 @@ fn analyze_random_page_cost(
 
 fn analyze_effective_io_concurrency(
     params: &HashMap<String, crate::models::PgConfigParam>,
+    stats: &crate::models::SystemStats,
     results: &mut AnalysisResults,
 ) -> Result<()> {
     let current_value = get_param_value(params, "effective_io_concurrency");
     let current = current_value.parse::<u64>().unwrap_or(1);
 
-    // Should be 200 for SSD/NVMe, default is 1 for HDDs
-    if current < 100 {
-        add_suggestion(
-            results,
-            ConfigCategory::Planner,
-            "effective_io_concurrency",
-            &current_value,
-            "200",
-            if current == 1 {
-                SuggestionLevel::Important
-            } else {
-                SuggestionLevel::Recommended
-            },
-            "effective_io_concurrency should be set to 200 for modern SSD/NVMe storage. \
-             Default of 1 is for single disk HDDs. Modern storage can handle massive concurrency \
-             and benefits from higher values for bitmap heap scans.",
-        );
+    // Recommendation depends on storage type
+    let (target, target_str) = match stats.storage_type {
+        crate::config::StorageType::Ssd => (200, "200"),
+        crate::config::StorageType::Hdd => (2, "2"),
+    };
+
+    if stats.storage_type == crate::config::StorageType::Ssd {
+        if current < 100 {
+             add_suggestion(
+                results,
+                ConfigCategory::Planner,
+                "effective_io_concurrency",
+                &current_value,
+                target_str,
+                if current == 1 {
+                    SuggestionLevel::Important
+                } else {
+                    SuggestionLevel::Recommended
+                },
+                "effective_io_concurrency should be set to 200 for modern SSD/NVMe storage. \
+                 Default of 1 is for single disk HDDs. Modern storage can handle massive concurrency \
+                 and benefits from higher values for bitmap heap scans.",
+            );
+        }
+    } else {
+        // HDD
+        if current > 10 {
+             add_suggestion(
+                results,
+                ConfigCategory::Planner,
+                "effective_io_concurrency",
+                &current_value,
+                target_str,
+                SuggestionLevel::Recommended,
+                "effective_io_concurrency is too high for HDD storage. Spinning disks have limited \
+                 IOPS and queue depth. Setting this too high (default for HDD is 1-2) can cause \
+                 excessive seek activity.",
+            );
+        }
     }
 
     Ok(())
@@ -142,4 +189,86 @@ fn add_suggestion(
         .entry(category)
         .or_default()
         .push(suggestion);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::{PgConfigParam, SystemStats};
+    use crate::config::StorageType;
+    use std::collections::HashMap;
+
+    fn create_param(value: &str) -> PgConfigParam {
+        PgConfigParam {
+            name: "test".to_string(),
+            current_value: value.to_string(),
+            default_value: None,
+            unit: None,
+            context: "user".to_string(),
+        }
+    }
+
+    #[test]
+    fn test_random_page_cost_ssd() {
+        let mut params = HashMap::new();
+        params.insert("random_page_cost".to_string(), create_param("4.0"));
+
+        let stats = SystemStats {
+            storage_type: StorageType::Ssd,
+            ..Default::default()
+        };
+
+        let mut results = AnalysisResults::default();
+        analyze_planner(&params, &stats, &mut results).unwrap();
+
+        let suggestion = results.suggestions_by_category[&ConfigCategory::Planner]
+            .iter()
+            .find(|s| s.parameter == "random_page_cost")
+            .expect("Should recommend 1.1 for SSD");
+
+        assert_eq!(suggestion.suggested_value, "1.1");
+        assert_eq!(suggestion.level, SuggestionLevel::Critical);
+    }
+
+    #[test]
+    fn test_random_page_cost_hdd() {
+        let mut params = HashMap::new();
+        params.insert("random_page_cost".to_string(), create_param("1.1"));
+
+        let stats = SystemStats {
+            storage_type: StorageType::Hdd,
+            ..Default::default()
+        };
+
+        let mut results = AnalysisResults::default();
+        analyze_planner(&params, &stats, &mut results).unwrap();
+
+        let suggestion = results.suggestions_by_category[&ConfigCategory::Planner]
+            .iter()
+            .find(|s| s.parameter == "random_page_cost")
+            .expect("Should recommend 4.0 for HDD");
+
+        assert_eq!(suggestion.suggested_value, "4.0");
+    }
+
+    #[test]
+    fn test_effective_io_concurrency_ssd() {
+        let mut params = HashMap::new();
+        params.insert("effective_io_concurrency".to_string(), create_param("1"));
+
+        let stats = SystemStats {
+            storage_type: StorageType::Ssd,
+            ..Default::default()
+        };
+
+        let mut results = AnalysisResults::default();
+        analyze_planner(&params, &stats, &mut results).unwrap();
+
+        let suggestion = results.suggestions_by_category[&ConfigCategory::Planner]
+            .iter()
+            .find(|s| s.parameter == "effective_io_concurrency")
+            .expect("Should recommend 200 for SSD");
+
+        assert_eq!(suggestion.suggested_value, "200");
+    }
 }
