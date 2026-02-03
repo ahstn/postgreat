@@ -84,10 +84,11 @@ struct SoftDeleteCandidate {
     schema: String,
     table_name: String,
     column_name: String,
-    table_size_pretty: String,
 }
 
-async fn fetch_soft_delete_candidates(pool: &Pool<Postgres>) -> Result<Vec<SoftDeleteCandidate>, CheckerError> {
+async fn fetch_soft_delete_candidates(
+    pool: &Pool<Postgres>,
+) -> Result<Vec<SoftDeleteCandidate>, CheckerError> {
     // Find tables with soft-delete columns that DO NOT have a partial index filtering on them
     const QUERY: &str = r#"
         WITH soft_delete_cols AS (
@@ -107,20 +108,20 @@ async fn fetch_soft_delete_candidates(pool: &Pool<Postgres>) -> Result<Vec<SoftD
         SELECT
             s.nspname,
             s.relname,
-            s.attname,
-            pg_size_pretty(pg_relation_size(s.relid)) as size_pretty
+            s.attname
         FROM soft_delete_cols s
         LEFT JOIN tables_with_partial_idx p ON s.relid = p.indrelid
         WHERE p.indrelid IS NULL -- Table has no partial indexes at all (simplification, but effective)
     "#;
 
-    let rows = sqlx::query(QUERY)
-        .fetch_all(pool)
-        .await
-        .map_err(|source| CheckerError::QueryError {
-            query: QUERY.into(),
-            source,
-        })?;
+    let rows =
+        sqlx::query(QUERY)
+            .fetch_all(pool)
+            .await
+            .map_err(|source| CheckerError::QueryError {
+                query: QUERY.into(),
+                source,
+            })?;
 
     let mut candidates = Vec::new();
     for row in rows {
@@ -128,31 +129,33 @@ async fn fetch_soft_delete_candidates(pool: &Pool<Postgres>) -> Result<Vec<SoftD
             schema: row.get("nspname"),
             table_name: row.get("relname"),
             column_name: row.get("attname"),
-            table_size_pretty: row.get("size_pretty"),
         });
     }
     Ok(candidates)
 }
 
 fn identify_missing_partial_indexes(candidates: &[SoftDeleteCandidate]) -> Vec<IndexUsageInfo> {
-    candidates.iter().map(|c| IndexUsageInfo {
-        issue: IndexIssueKind::MissingPartialIndex,
-        schema: c.schema.clone(),
-        table_name: c.table_name.clone(),
-        index_name: format!("(missing on {})", c.column_name),
-        index_size_bytes: 0,
-        index_size_pretty: "0 B".to_string(),
-        scans: 0,
-        tuples_read: 0,
-        tuples_fetched: 0,
-        avg_tuples_per_scan: 0.0,
-        heap_fetch_ratio: 0.0,
-        table_live_tup: None,
-        is_unique: false,
-        enforces_constraint: false,
-        is_expression: false,
-        is_partial: false,
-    }).collect()
+    candidates
+        .iter()
+        .map(|c| IndexUsageInfo {
+            issue: IndexIssueKind::MissingPartialIndex,
+            schema: c.schema.clone(),
+            table_name: c.table_name.clone(),
+            index_name: format!("(missing on {})", c.column_name),
+            index_size_bytes: 0,
+            index_size_pretty: "0 B".to_string(),
+            scans: 0,
+            tuples_read: 0,
+            tuples_fetched: 0,
+            avg_tuples_per_scan: 0.0,
+            heap_fetch_ratio: 0.0,
+            table_live_tup: None,
+            is_unique: false,
+            enforces_constraint: false,
+            is_expression: false,
+            is_partial: false,
+        })
+        .collect()
 }
 
 #[derive(Debug)]
@@ -160,8 +163,6 @@ struct BrinCandidate {
     schema: String,
     table_name: String,
     column_name: String,
-    correlation: f64,
-    table_size_pretty: String,
 }
 
 async fn fetch_brin_candidates(pool: &Pool<Postgres>) -> Result<Vec<BrinCandidate>, CheckerError> {
@@ -170,9 +171,7 @@ async fn fetch_brin_candidates(pool: &Pool<Postgres>) -> Result<Vec<BrinCandidat
         SELECT
             s.schemaname,
             s.tablename,
-            s.attname,
-            s.correlation,
-            pg_size_pretty(pg_relation_size(c.oid)) as size_pretty
+            s.attname
         FROM pg_stats s
         JOIN pg_class c ON c.relname = s.tablename
         JOIN pg_namespace n ON c.relnamespace = n.oid AND n.nspname = s.schemaname
@@ -183,13 +182,14 @@ async fn fetch_brin_candidates(pool: &Pool<Postgres>) -> Result<Vec<BrinCandidat
           AND c.relkind = 'r'
     "#;
 
-    let rows = sqlx::query(QUERY)
-        .fetch_all(pool)
-        .await
-        .map_err(|source| CheckerError::QueryError {
-            query: QUERY.into(),
-            source,
-        })?;
+    let rows =
+        sqlx::query(QUERY)
+            .fetch_all(pool)
+            .await
+            .map_err(|source| CheckerError::QueryError {
+                query: QUERY.into(),
+                source,
+            })?;
 
     let mut candidates = Vec::new();
     for row in rows {
@@ -197,8 +197,6 @@ async fn fetch_brin_candidates(pool: &Pool<Postgres>) -> Result<Vec<BrinCandidat
             schema: row.get("schemaname"),
             table_name: row.get("tablename"),
             column_name: row.get("attname"),
-            correlation: row.get("correlation"),
-            table_size_pretty: row.get("size_pretty"),
         });
     }
     Ok(candidates)
@@ -206,24 +204,28 @@ async fn fetch_brin_candidates(pool: &Pool<Postgres>) -> Result<Vec<BrinCandidat
 
 fn identify_brin_candidates(candidates: &[BrinCandidate]) -> Vec<IndexUsageInfo> {
     // Filter to top candidates
-    candidates.iter().take(5).map(|c| IndexUsageInfo {
-        issue: IndexIssueKind::BrinCandidate,
-        schema: c.schema.clone(),
-        table_name: c.table_name.clone(),
-        index_name: c.column_name.clone(), // Use column name as proxy
-        index_size_bytes: 0,
-        index_size_pretty: "0 B".to_string(),
-        scans: 0,
-        tuples_read: 0,
-        tuples_fetched: 0,
-        avg_tuples_per_scan: 0.0,
-        heap_fetch_ratio: 0.0,
-        table_live_tup: None,
-        is_unique: false,
-        enforces_constraint: false,
-        is_expression: false,
-        is_partial: false,
-    }).collect()
+    candidates
+        .iter()
+        .take(5)
+        .map(|c| IndexUsageInfo {
+            issue: IndexIssueKind::BrinCandidate,
+            schema: c.schema.clone(),
+            table_name: c.table_name.clone(),
+            index_name: c.column_name.clone(), // Use column name as proxy
+            index_size_bytes: 0,
+            index_size_pretty: "0 B".to_string(),
+            scans: 0,
+            tuples_read: 0,
+            tuples_fetched: 0,
+            avg_tuples_per_scan: 0.0,
+            heap_fetch_ratio: 0.0,
+            table_live_tup: None,
+            is_unique: false,
+            enforces_constraint: false,
+            is_expression: false,
+            is_partial: false,
+        })
+        .collect()
 }
 
 async fn fetch_index_stats(pool: &Pool<Postgres>) -> Result<Vec<IndexStatRow>, CheckerError> {
@@ -407,6 +409,7 @@ fn add_index_suggestions(indexes: &[IndexUsageInfo], results: &mut AnalysisResul
                 ),
             ),
             IndexIssueKind::LowSelectivity => {
+                let table_name = format!("{}.{}", index.schema, index.table_name);
                 let table_rows = index.table_live_tup.unwrap_or(0) as f64;
                 let selectivity = if table_rows > 0.0 {
                     (index.avg_tuples_per_scan / table_rows * 100.0).min(100.0)
@@ -420,7 +423,7 @@ fn add_index_suggestions(indexes: &[IndexUsageInfo], results: &mut AnalysisResul
                         "{} returns ~{:.1}% of {} on each scan ({} tuples/read). This low selectivity means the planner touches a large fraction of the table; redesign the index per docs/6 section C.2.",
                         parameter,
                         selectivity,
-                        format!("{}.{}", index.schema, index.table_name),
+                        table_name,
                         index.avg_tuples_per_scan as i64
                     ),
                 )

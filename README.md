@@ -53,6 +53,21 @@ export POSTGRES_PASSWORD=password
 postgreat analyze --compute "8vCPU-64GB"
 ```
 
+### Analyze Workload (Slow Queries & Index Candidates)
+
+Requires `pg_stat_statements` to be installed and enabled on the target database.
+
+```bash
+postgreat workload \
+  -h localhost \
+  -p 5432 \
+  -d mydatabase \
+  -u postgres \
+  -P password \
+  --limit 20 \
+  --min-calls 10
+```
+
 ### Compute Specifications
 
 PostGreat cannot always read host hardware (e.g., AWS RDS instances), so hardware-aware recommendations require the `--compute` flag. Provide the instance shape using one of the formats below:

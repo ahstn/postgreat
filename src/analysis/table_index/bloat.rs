@@ -206,9 +206,10 @@ fn add_bloat_suggestions(tables: &[TableBloatInfo], results: &mut AnalysisResult
 
 fn add_seq_scan_suggestions(hotspots: &[TableSeqScanInfo], results: &mut AnalysisResults) {
     for table in hotspots {
+        let full_table_name = format!("{}.{}", table.schema, table.table_name);
         let rationale = format!(
             "{} has {} sequential scans vs {} index scans on ~{} rows ({}). This matches the guidance from docs/6: filter-heavy queries are falling back to seq scans on sizable tables. Investigate pg_stat_statements for the offending queries and create composite/partial indexes to cover their predicates.",
-            format!("{}.{}", table.schema, table.table_name),
+            full_table_name,
             table.seq_scan,
             table.idx_scan,
             table.live_tuples,
@@ -217,10 +218,7 @@ fn add_seq_scan_suggestions(hotspots: &[TableSeqScanInfo], results: &mut Analysi
 
         push_table_index_suggestion(
             results,
-            &format!(
-                "table {} sequential scans",
-                format!("{}.{}", table.schema, table.table_name)
-            ),
+            &format!("table {} sequential scans", full_table_name),
             &format!("{} seq / {} idx scans", table.seq_scan, table.idx_scan),
             "Add or extend indexes to lower sequential scans",
             SuggestionLevel::Important,

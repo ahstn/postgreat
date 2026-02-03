@@ -5,9 +5,12 @@ pub mod memory;
 pub mod planner;
 pub mod table_index;
 pub mod wal;
+pub mod workload;
 
 use crate::models::PgConfigParam;
 use std::collections::HashMap;
+
+pub(crate) mod query_parser;
 
 pub(crate) fn get_param<'a>(
     params: &'a HashMap<String, PgConfigParam>,

@@ -107,3 +107,60 @@ WHERE shared_blks_read > 1000
 ORDER BY shared_blks_read DESC
 LIMIT 20;
 ```
+
+## Find Queries Writing the Most Temporary Files (temp spill)
+
+```sql
+SELECT
+  round(total_exec_time::numeric, 2) AS total_time_ms,
+  calls,
+  temp_blks_written,
+  temp_blks_read,
+  query
+FROM pg_stat_statements
+WHERE temp_blks_written > 0
+ORDER BY temp_blks_written DESC
+LIMIT 20;
+```
+
+## Find Queries with Highest Shared Block Reads (I/O heavy)
+
+```sql
+SELECT
+  round(total_exec_time::numeric, 2) AS total_time_ms,
+  calls,
+  shared_blks_read,
+  shared_blks_hit,
+  query
+FROM pg_stat_statements
+ORDER BY shared_blks_read DESC
+LIMIT 20;
+```
+
+## Find Queries with Highest Execution Time Variance (PG13+)
+
+```sql
+SELECT
+  round(mean_exec_time::numeric, 2) AS avg_time_ms,
+  round(stddev_exec_time::numeric, 2) AS stddev_time_ms,
+  calls,
+  query
+FROM pg_stat_statements
+WHERE calls > 10
+ORDER BY stddev_exec_time DESC
+LIMIT 20;
+```
+
+## Find Queries Returning Many Rows per Call
+
+```sql
+SELECT
+  round(mean_exec_time::numeric, 2) AS avg_time_ms,
+  calls,
+  round((rows::numeric / NULLIF(calls, 0)), 2) AS avg_rows_per_call,
+  query
+FROM pg_stat_statements
+WHERE calls > 10
+ORDER BY avg_rows_per_call DESC
+LIMIT 20;
+```

@@ -26,9 +26,9 @@ fn analyze_random_page_cost(
     let current = current_value.parse::<f64>().unwrap_or(4.0);
 
     // Recommendation depends on storage type
-    let (target, target_str) = match stats.storage_type {
-        crate::config::StorageType::Ssd => (1.1, "1.1"),
-        crate::config::StorageType::Hdd => (4.0, "4.0"),
+    let target_str = match stats.storage_type {
+        crate::config::StorageType::Ssd => "1.1",
+        crate::config::StorageType::Hdd => "4.0",
     };
 
     if stats.storage_type == crate::config::StorageType::Ssd {
@@ -91,14 +91,14 @@ fn analyze_effective_io_concurrency(
     let current = current_value.parse::<u64>().unwrap_or(1);
 
     // Recommendation depends on storage type
-    let (target, target_str) = match stats.storage_type {
-        crate::config::StorageType::Ssd => (200, "200"),
-        crate::config::StorageType::Hdd => (2, "2"),
+    let target_str = match stats.storage_type {
+        crate::config::StorageType::Ssd => "200",
+        crate::config::StorageType::Hdd => "2",
     };
 
     if stats.storage_type == crate::config::StorageType::Ssd {
         if current < 100 {
-             add_suggestion(
+            add_suggestion(
                 results,
                 ConfigCategory::Planner,
                 "effective_io_concurrency",
@@ -117,7 +117,7 @@ fn analyze_effective_io_concurrency(
     } else {
         // HDD
         if current > 10 {
-             add_suggestion(
+            add_suggestion(
                 results,
                 ConfigCategory::Planner,
                 "effective_io_concurrency",
@@ -194,8 +194,8 @@ fn add_suggestion(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{PgConfigParam, SystemStats};
     use crate::config::StorageType;
+    use crate::models::{PgConfigParam, SystemStats};
     use std::collections::HashMap;
 
     fn create_param(value: &str) -> PgConfigParam {

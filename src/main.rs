@@ -1,7 +1,8 @@
 use clap::{Parser, Subcommand};
+use postgreat::analysis::workload::WorkloadOptions;
 use postgreat::checker::ConfigChecker;
 use postgreat::config::{DbConfig, StorageType, WorkloadType};
-use postgreat::reporter::{ReportFormat, Reporter};
+use postgreat::reporter::{ReportFormat, Reporter, WorkloadReporter};
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -73,6 +74,49 @@ enum Commands {
         #[arg(short = 'c', long = "config")]
         config_path: String,
     },
+    /// Analyze workload performance using pg_stat_statements
+    Workload {
+        /// Database host
+        #[arg(
+            short = 'H',
+            long = "host",
+            env = "POSTGRES_HOST",
+            default_value = "localhost"
+        )]
+        host: String,
+
+        /// Database port
+        #[arg(long = "port", env = "POSTGRES_PORT", default_value = "5432")]
+        port: u16,
+
+        /// Database name
+        #[arg(short = 'd', long = "database", env = "POSTGRES_DATABASE")]
+        database: String,
+
+        /// Username
+        #[arg(short = 'u', long = "username", env = "POSTGRES_USER")]
+        username: String,
+
+        /// Password
+        #[arg(short = 'p', long = "password", env = "POSTGRES_PASSWORD")]
+        password: String,
+
+        /// Top N queries per category
+        #[arg(long = "limit", default_value = "20")]
+        limit: usize,
+
+        /// Minimum number of calls to consider
+        #[arg(long = "min-calls", default_value = "10")]
+        min_calls: i64,
+
+        /// Maximum query length to display
+        #[arg(long = "max-query-len", default_value = "200")]
+        max_query_len: usize,
+
+        /// Include full query text (no truncation)
+        #[arg(long = "include-full-query", default_value_t = false)]
+        include_full_query: bool,
+    },
 }
 
 #[tokio::main]
@@ -135,6 +179,41 @@ async fn main() -> anyhow::Result<()> {
                 let reporter = Reporter::new(cli.format);
                 reporter.report(&results)?;
             }
+        }
+        Commands::Workload {
+            host,
+            port,
+            database,
+            username,
+            password,
+            limit,
+            min_calls,
+            max_query_len,
+            include_full_query,
+        } => {
+            info!("Analyzing workload for database: {}", database);
+            let config = DbConfig::from_connection_params(
+                host,
+                port,
+                database,
+                username,
+                password,
+                None,
+                StorageType::Ssd,
+                WorkloadType::Oltp,
+            );
+
+            let mut checker = ConfigChecker::new(config).await?;
+            let opts = WorkloadOptions {
+                limit,
+                min_calls,
+                max_query_len,
+                include_full_query,
+            };
+            let results = checker.analyze_workload(opts).await?;
+
+            let reporter = WorkloadReporter::new(cli.format);
+            reporter.report(&results)?;
         }
     }
 

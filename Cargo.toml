@@ -26,6 +26,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 # Utilities
 anyhow = "1.0"
 itertools = "0.13"
+sqlparser = "0.45"
 
 [dev-dependencies]
 rstest = "0.23"
