@@ -61,10 +61,10 @@ async fn fetch_table_stats(pool: &Pool<Postgres>) -> Result<Vec<TableStatRow>, C
         SELECT
             s.schemaname,
             s.relname,
-            s.n_live_tup,
-            s.n_dead_tup,
-            s.seq_scan,
-            s.idx_scan,
+            COALESCE(s.n_live_tup, 0) AS n_live_tup,
+            COALESCE(s.n_dead_tup, 0) AS n_dead_tup,
+            COALESCE(s.seq_scan, 0) AS seq_scan,
+            COALESCE(s.idx_scan, 0) AS idx_scan,
             pg_relation_size(s.relid) AS table_size_bytes,
             pg_size_pretty(pg_relation_size(s.relid)) AS table_size_pretty,
             to_char(s.last_autovacuum, 'YYYY-MM-DD HH24:MI:SS') AS last_autovacuum_text,
@@ -206,9 +206,10 @@ fn add_bloat_suggestions(tables: &[TableBloatInfo], results: &mut AnalysisResult
 
 fn add_seq_scan_suggestions(hotspots: &[TableSeqScanInfo], results: &mut AnalysisResults) {
     for table in hotspots {
+        let full_table_name = format!("{}.{}", table.schema, table.table_name);
         let rationale = format!(
             "{} has {} sequential scans vs {} index scans on ~{} rows ({}). This matches the guidance from docs/6: filter-heavy queries are falling back to seq scans on sizable tables. Investigate pg_stat_statements for the offending queries and create composite/partial indexes to cover their predicates.",
-            format!("{}.{}", table.schema, table.table_name),
+            full_table_name,
             table.seq_scan,
             table.idx_scan,
             table.live_tuples,
@@ -217,10 +218,7 @@ fn add_seq_scan_suggestions(hotspots: &[TableSeqScanInfo], results: &mut Analysi
 
         push_table_index_suggestion(
             results,
-            &format!(
-                "table {} sequential scans",
-                format!("{}.{}", table.schema, table.table_name)
-            ),
+            &format!("table {} sequential scans", full_table_name),
             &format!("{} seq / {} idx scans", table.seq_scan, table.idx_scan),
             "Add or extend indexes to lower sequential scans",
             SuggestionLevel::Important,

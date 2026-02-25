@@ -1,5 +1,6 @@
 use crate::models::{
-    AnalysisResults, ConfigCategory, ConfigSuggestion, IndexIssueKind, SuggestionLevel,
+    AnalysisResults, ConfigCategory, ConfigSuggestion, IndexIssueKind, SlowQueryKind,
+    SuggestionLevel, WorkloadResults,
 };
 use clap::ValueEnum;
 use snafu::{ResultExt, Snafu};
@@ -273,7 +274,7 @@ impl Reporter {
         use serde_json;
 
         let json = serde_json::to_string_pretty(results)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+            .map_err(std::io::Error::other)
             .context(OutputSnafu)?;
 
         println!("{}", json);
@@ -544,8 +545,12 @@ impl Reporter {
                         IndexIssueKind::FailedIndexOnly => {
                             format!("{:.0}% heap fetch ratio", idx.heap_fetch_ratio * 100.0)
                         }
-                        IndexIssueKind::MissingPartialIndex => "missing soft-delete partial index".to_string(),
-                        IndexIssueKind::BrinCandidate => "BRIN candidate for time-series/append-only".to_string(),
+                        IndexIssueKind::MissingPartialIndex => {
+                            "missing soft-delete partial index".to_string()
+                        }
+                        IndexIssueKind::BrinCandidate => {
+                            "BRIN candidate for time-series/append-only".to_string()
+                        }
                     };
 
                     writeln!(
@@ -576,6 +581,354 @@ impl Reporter {
             IndexIssueKind::MissingPartialIndex => "Missing Partial Index",
             IndexIssueKind::BrinCandidate => "BRIN Candidate",
         }
+    }
+}
+
+pub struct WorkloadReporter {
+    format: ReportFormat,
+}
+
+impl WorkloadReporter {
+    pub fn new(format: ReportFormat) -> Self {
+        Self { format }
+    }
+
+    pub fn report(&self, results: &WorkloadResults) -> Result<()> {
+        match self.format {
+            ReportFormat::Markdown => self.report_markdown(results)?,
+            ReportFormat::Json => self.report_json(results)?,
+            ReportFormat::Text => self.report_text(results)?,
+        }
+        Ok(())
+    }
+
+    fn report_markdown(&self, results: &WorkloadResults) -> Result<()> {
+        use std::io::Write;
+
+        let stdout = std::io::stdout();
+        let mut handle = stdout.lock();
+
+        writeln!(handle, "# PostgreSQL Workload Analysis Report\n").context(OutputSnafu)?;
+
+        writeln!(handle, "## Summary\n").context(OutputSnafu)?;
+        if results.warnings.is_empty() {
+            writeln!(handle, "- **Warnings**: None").context(OutputSnafu)?;
+        } else {
+            for warning in &results.warnings {
+                writeln!(handle, "- **Warning**: {}", warning).context(OutputSnafu)?;
+            }
+        }
+        writeln!(handle, "- **Parse failures**: {}", results.parse_failures)
+            .context(OutputSnafu)?;
+        writeln!(handle).context(OutputSnafu)?;
+
+        for group in &results.slow_query_groups {
+            writeln!(handle, "## {}\n", format_slow_query_kind(group.kind)).context(OutputSnafu)?;
+            if group.queries.is_empty() {
+                writeln!(handle, "No queries matched the filters.\n").context(OutputSnafu)?;
+                continue;
+            }
+
+            writeln!(
+                handle,
+                "| Query ID | Calls | Total ms | Mean ms | Max ms | Rows | Shared Read | Temp Written | Query |"
+            )
+            .context(OutputSnafu)?;
+            writeln!(
+                handle,
+                "|---------|-------|----------|---------|--------|------|-------------|--------------|-------|"
+            )
+            .context(OutputSnafu)?;
+            for query in &group.queries {
+                writeln!(
+                    handle,
+                    "| {} | {} | {:.2} | {:.2} | {:.2} | {} | {} | {} | {} |",
+                    query.queryid,
+                    query.calls,
+                    query.total_time_ms,
+                    query.mean_time_ms,
+                    query.max_time_ms,
+                    query.rows,
+                    query.shared_blks_read,
+                    query.temp_blks_written,
+                    query.query_text.replace('|', "\\|")
+                )
+                .context(OutputSnafu)?;
+            }
+            writeln!(handle).context(OutputSnafu)?;
+        }
+
+        if !results.query_index_candidates.is_empty() {
+            writeln!(handle, "## Index Candidates (Heuristic)\n").context(OutputSnafu)?;
+            writeln!(
+                handle,
+                "| Table | Columns | Calls | Total ms | Mean ms | Query ID | Reason |"
+            )
+            .context(OutputSnafu)?;
+            writeln!(
+                handle,
+                "|-------|---------|-------|----------|---------|----------|--------|"
+            )
+            .context(OutputSnafu)?;
+            for candidate in &results.query_index_candidates {
+                writeln!(
+                    handle,
+                    "| {}.{} | {} | {} | {:.2} | {:.2} | {} | {} |",
+                    candidate.schema,
+                    candidate.table,
+                    candidate.columns.join(", "),
+                    candidate.calls,
+                    candidate.total_time_ms,
+                    candidate.mean_time_ms,
+                    candidate.queryid,
+                    candidate.reason.replace('|', "\\|")
+                )
+                .context(OutputSnafu)?;
+            }
+            writeln!(handle).context(OutputSnafu)?;
+        }
+
+        if !results.bloat_info.is_empty()
+            || !results.seq_scan_info.is_empty()
+            || !results.index_usage_info.is_empty()
+        {
+            self.write_table_index_markdown(handle, results)?;
+        }
+
+        Ok(())
+    }
+
+    fn write_table_index_markdown(
+        &self,
+        mut handle: std::io::StdoutLock,
+        results: &WorkloadResults,
+    ) -> Result<()> {
+        use std::io::Write;
+
+        writeln!(handle, "## Table & Index Health\n").context(OutputSnafu)?;
+
+        if !results.bloat_info.is_empty() {
+            writeln!(handle, "### Table Bloat Watchlist\n").context(OutputSnafu)?;
+            writeln!(
+                handle,
+                "| Table | Dead % | Dead Tuples | Live Tuples | Last Autovacuum | Size |"
+            )
+            .context(OutputSnafu)?;
+            writeln!(
+                handle,
+                "|-------|--------|-------------|-------------|-----------------|------|"
+            )
+            .context(OutputSnafu)?;
+
+            for table in &results.bloat_info {
+                writeln!(
+                    handle,
+                    "| {}.{} | {:.1}% | {} | {} | {} | {} |",
+                    table.schema,
+                    table.table_name,
+                    table.dead_tup_ratio * 100.0,
+                    table.dead_tuples,
+                    table.live_tuples,
+                    table.last_autovacuum.as_deref().unwrap_or("never"),
+                    table.table_size_pretty
+                )
+                .context(OutputSnafu)?;
+            }
+            writeln!(handle).context(OutputSnafu)?;
+        }
+
+        if !results.seq_scan_info.is_empty() {
+            writeln!(handle, "### Sequential Scan Hotspots\n").context(OutputSnafu)?;
+            writeln!(
+                handle,
+                "| Table | Seq Scans | Idx Scans | Live Tuples | Size |"
+            )
+            .context(OutputSnafu)?;
+            writeln!(
+                handle,
+                "|-------|-----------|-----------|-------------|------|"
+            )
+            .context(OutputSnafu)?;
+
+            for table in &results.seq_scan_info {
+                writeln!(
+                    handle,
+                    "| {}.{} | {} | {} | {} | {} |",
+                    table.schema,
+                    table.table_name,
+                    table.seq_scan,
+                    table.idx_scan,
+                    table.live_tuples,
+                    table.table_size_pretty
+                )
+                .context(OutputSnafu)?;
+            }
+            writeln!(handle).context(OutputSnafu)?;
+        }
+
+        if !results.index_usage_info.is_empty() {
+            writeln!(handle, "### Index Findings\n").context(OutputSnafu)?;
+            for issue in [
+                IndexIssueKind::Unused,
+                IndexIssueKind::LowSelectivity,
+                IndexIssueKind::FailedIndexOnly,
+                IndexIssueKind::MissingPartialIndex,
+                IndexIssueKind::BrinCandidate,
+            ] {
+                let group: Vec<_> = results
+                    .index_usage_info
+                    .iter()
+                    .filter(|idx| idx.issue == issue)
+                    .collect();
+                if group.is_empty() {
+                    continue;
+                }
+
+                writeln!(handle, "#### {}\n", format_issue_name(&issue)).context(OutputSnafu)?;
+                writeln!(handle, "| Index | Table | Scans | Size | Notes |")
+                    .context(OutputSnafu)?;
+                writeln!(handle, "|-------|-------|-------|------|-------|")
+                    .context(OutputSnafu)?;
+
+                for idx in group {
+                    let notes = match idx.issue {
+                        IndexIssueKind::Unused => "never scanned".to_string(),
+                        IndexIssueKind::LowSelectivity => {
+                            let percentage = selectivity_ratio(idx) * 100.0;
+                            format!("~{:.1}% of table per scan", percentage.min(100.0))
+                        }
+                        IndexIssueKind::FailedIndexOnly => {
+                            format!("{:.0}% heap fetch ratio", idx.heap_fetch_ratio * 100.0)
+                        }
+                        IndexIssueKind::MissingPartialIndex => {
+                            "missing soft-delete partial index".to_string()
+                        }
+                        IndexIssueKind::BrinCandidate => {
+                            "BRIN candidate for time-series/append-only".to_string()
+                        }
+                    };
+
+                    writeln!(
+                        handle,
+                        "| {}.{} | {}.{} | {} | {} | {} |",
+                        idx.schema,
+                        idx.index_name,
+                        idx.schema,
+                        idx.table_name,
+                        idx.scans,
+                        idx.index_size_pretty,
+                        notes
+                    )
+                    .context(OutputSnafu)?;
+                }
+                writeln!(handle).context(OutputSnafu)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn report_json(&self, results: &WorkloadResults) -> Result<()> {
+        use std::io::Write;
+        let stdout = std::io::stdout();
+        let mut handle = stdout.lock();
+        let json =
+            serde_json::to_string_pretty(results).map_err(|err| ReporterError::OutputError {
+                source: std::io::Error::other(err),
+            })?;
+        writeln!(handle, "{json}").context(OutputSnafu)?;
+        Ok(())
+    }
+
+    fn report_text(&self, results: &WorkloadResults) -> Result<()> {
+        use std::io::Write;
+        let stdout = std::io::stdout();
+        let mut handle = stdout.lock();
+
+        writeln!(handle, "PostgreSQL Workload Analysis Report").context(OutputSnafu)?;
+        if !results.warnings.is_empty() {
+            for warning in &results.warnings {
+                writeln!(handle, "Warning: {warning}").context(OutputSnafu)?;
+            }
+        }
+        writeln!(handle, "Parse failures: {}", results.parse_failures).context(OutputSnafu)?;
+        writeln!(handle).context(OutputSnafu)?;
+
+        for group in &results.slow_query_groups {
+            writeln!(handle, "{}:", format_slow_query_kind(group.kind)).context(OutputSnafu)?;
+            for query in &group.queries {
+                writeln!(
+                    handle,
+                    "  - {} calls, total {:.2}ms, mean {:.2}ms, queryid {}",
+                    query.calls, query.total_time_ms, query.mean_time_ms, query.queryid
+                )
+                .context(OutputSnafu)?;
+            }
+            writeln!(handle).context(OutputSnafu)?;
+        }
+
+        if !results.query_index_candidates.is_empty() {
+            writeln!(handle, "Index Candidates (Heuristic):").context(OutputSnafu)?;
+            for candidate in &results.query_index_candidates {
+                writeln!(
+                    handle,
+                    "  - {}.{} ({})",
+                    candidate.schema,
+                    candidate.table,
+                    candidate.columns.join(", ")
+                )
+                .context(OutputSnafu)?;
+            }
+            writeln!(handle).context(OutputSnafu)?;
+        }
+
+        if !results.bloat_info.is_empty()
+            || !results.seq_scan_info.is_empty()
+            || !results.index_usage_info.is_empty()
+        {
+            writeln!(handle, "Table & Index Health:").context(OutputSnafu)?;
+            if !results.bloat_info.is_empty() {
+                writeln!(handle, "  - Bloat watchlist: {}", results.bloat_info.len())
+                    .context(OutputSnafu)?;
+            }
+            if !results.seq_scan_info.is_empty() {
+                writeln!(
+                    handle,
+                    "  - Seq scan hotspots: {}",
+                    results.seq_scan_info.len()
+                )
+                .context(OutputSnafu)?;
+            }
+            if !results.index_usage_info.is_empty() {
+                writeln!(
+                    handle,
+                    "  - Index findings: {}",
+                    results.index_usage_info.len()
+                )
+                .context(OutputSnafu)?;
+            }
+        }
+
+        Ok(())
+    }
+}
+
+fn format_slow_query_kind(kind: SlowQueryKind) -> &'static str {
+    match kind {
+        SlowQueryKind::TotalTime => "Slow Queries by Total Time",
+        SlowQueryKind::MeanTime => "Slow Queries by Mean Time",
+        SlowQueryKind::SharedBlksRead => "Slow Queries by Shared Blocks Read",
+        SlowQueryKind::TempBlksWritten => "Slow Queries by Temp Blocks Written",
+    }
+}
+
+fn format_issue_name(issue: &IndexIssueKind) -> &'static str {
+    match issue {
+        IndexIssueKind::Unused => "Unused",
+        IndexIssueKind::LowSelectivity => "Low Selectivity",
+        IndexIssueKind::FailedIndexOnly => "Failed Index-Only",
+        IndexIssueKind::MissingPartialIndex => "Missing Partial Index",
+        IndexIssueKind::BrinCandidate => "BRIN Candidate",
     }
 }
 

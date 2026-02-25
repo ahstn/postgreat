@@ -54,6 +54,7 @@ pub struct ComputeSpec {
 type Result<T, E = ConfigError> = std::result::Result<T, E>;
 
 impl DbConfig {
+    #[allow(clippy::too_many_arguments)]
     pub fn from_connection_params(
         host: String,
         port: u16,

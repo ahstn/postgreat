@@ -194,6 +194,64 @@ impl AnalysisResults {
     }
 }
 
+/// Represents groups of slow queries by category.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SlowQueryGroup {
+    pub kind: SlowQueryKind,
+    pub queries: Vec<SlowQueryInfo>,
+}
+
+/// Categories of slow queries in workload analysis.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum SlowQueryKind {
+    TotalTime,
+    MeanTime,
+    SharedBlksRead,
+    TempBlksWritten,
+}
+
+/// Represents a single slow query entry from pg_stat_statements.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SlowQueryInfo {
+    pub queryid: i64,
+    pub calls: i64,
+    pub total_time_ms: f64,
+    pub mean_time_ms: f64,
+    pub max_time_ms: f64,
+    pub rows: i64,
+    pub shared_blks_read: i64,
+    pub shared_blks_hit: i64,
+    pub temp_blks_read: i64,
+    pub temp_blks_written: i64,
+    pub query_text: String,
+}
+
+/// Represents a heuristic index candidate derived from slow queries.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QueryIndexCandidate {
+    pub schema: String,
+    pub table: String,
+    pub columns: Vec<String>,
+    pub reason: String,
+    pub queryid: i64,
+    pub total_time_ms: f64,
+    pub mean_time_ms: f64,
+    pub calls: i64,
+}
+
+/// Workload analysis results for slow query and index candidate reporting.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct WorkloadResults {
+    pub slow_query_groups: Vec<SlowQueryGroup>,
+    pub query_index_candidates: Vec<QueryIndexCandidate>,
+    pub index_usage_info: Vec<IndexUsageInfo>,
+    pub seq_scan_info: Vec<TableSeqScanInfo>,
+    pub bloat_info: Vec<TableBloatInfo>,
+    pub warnings: Vec<String>,
+    pub parse_failures: usize,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

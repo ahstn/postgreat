@@ -1,6 +1,9 @@
-use crate::analysis::{autovacuum, concurrency, logging, memory, planner, table_index, wal};
+use crate::analysis::workload::WorkloadOptions;
+use crate::analysis::{
+    autovacuum, concurrency, logging, memory, planner, table_index, wal, workload,
+};
 use crate::config::DbConfig;
-use crate::models::{AnalysisResults, PgConfigParam, SystemStats};
+use crate::models::{AnalysisResults, PgConfigParam, SystemStats, WorkloadResults};
 use snafu::{ResultExt, Snafu};
 use sqlx::{postgres::PgPoolOptions, query_scalar, Pool, Postgres, Row};
 use std::collections::HashMap;
@@ -80,6 +83,24 @@ impl ConfigChecker {
         info!("Running table and index health analysis...");
         if let Err(err) = table_index::analyze_table_index_health(&self.pool, &mut results).await {
             warn!("Table/index health analysis skipped: {err}");
+        }
+
+        Ok(results)
+    }
+
+    pub async fn analyze_workload(&mut self, opts: WorkloadOptions) -> Result<WorkloadResults> {
+        let mut results = workload::analyze(&self.pool, &opts).await?;
+
+        info!("Running table and index health analysis...");
+        let mut table_results = AnalysisResults::default();
+        if let Err(err) =
+            table_index::analyze_table_index_health(&self.pool, &mut table_results).await
+        {
+            warn!("Table/index health analysis skipped: {err}");
+        } else {
+            results.bloat_info = table_results.bloat_info;
+            results.seq_scan_info = table_results.seq_scan_info;
+            results.index_usage_info = table_results.index_usage_info;
         }
 
         Ok(results)

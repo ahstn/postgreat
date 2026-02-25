@@ -1,8 +1,6 @@
 use crate::analysis::{get_param, param_value_as_gigabytes, param_value_as_seconds};
 use crate::checker::CheckerError;
-use crate::models::{
-    AnalysisResults, ConfigCategory, ConfigSuggestion, SuggestionLevel, SystemStats,
-};
+use crate::models::{AnalysisResults, ConfigCategory, ConfigSuggestion, SuggestionLevel};
 use std::collections::HashMap;
 
 type Result<T> = std::result::Result<T, CheckerError>;
@@ -34,7 +32,7 @@ fn analyze_max_wal_size(
         // we are running out of WAL space before the timeout hits.
         if let (Some(req), Some(timed)) = (stats.checkpoints_req, stats.checkpoints_timed) {
             if req > timed && req > 10 {
-                 add_suggestion(
+                add_suggestion(
                     results,
                     ConfigCategory::Wal,
                     "max_wal_size",
@@ -141,7 +139,7 @@ fn analyze_checkpoint_timeout(
         };
 
         if is_oltp {
-             if current_seconds < 300 {
+            if current_seconds < 300 {
                 add_suggestion(
                     results,
                     ConfigCategory::Wal,
@@ -207,7 +205,6 @@ fn analyze_checkpoint_completion_target(
     Ok(())
 }
 
-
 fn add_suggestion(
     results: &mut AnalysisResults,
     category: ConfigCategory,
@@ -235,8 +232,8 @@ fn add_suggestion(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{PgConfigParam, SystemStats};
     use crate::config::WorkloadType;
+    use crate::models::{PgConfigParam, SystemStats};
     use std::collections::HashMap;
 
     fn create_param(value: &str, unit: Option<&str>) -> PgConfigParam {
@@ -253,7 +250,10 @@ mod tests {
     fn test_checkpoint_timeout_oltp() {
         let mut params = HashMap::new();
         // 4 min, should trigger warning
-        params.insert("checkpoint_timeout".to_string(), create_param("4", Some("min")));
+        params.insert(
+            "checkpoint_timeout".to_string(),
+            create_param("4", Some("min")),
+        );
 
         let stats = SystemStats {
             workload_type: WorkloadType::Oltp,
@@ -275,7 +275,10 @@ mod tests {
     fn test_checkpoint_timeout_olap() {
         let mut params = HashMap::new();
         // 10 min, fine for OLTP but short for OLAP
-        params.insert("checkpoint_timeout".to_string(), create_param("10", Some("min")));
+        params.insert(
+            "checkpoint_timeout".to_string(),
+            create_param("10", Some("min")),
+        );
 
         let stats = SystemStats {
             workload_type: WorkloadType::Olap,

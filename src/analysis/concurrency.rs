@@ -72,7 +72,7 @@ fn analyze_max_worker_processes(
         let current_value = get_param_value(params, "max_worker_processes");
         let recommended = cpu;
 
-        if let Some(current_workers) = current_value.parse::<usize>().ok() {
+        if let Ok(current_workers) = current_value.parse::<usize>() {
             if current_workers != recommended {
                 add_suggestion(
                     results,
@@ -103,7 +103,7 @@ fn analyze_max_parallel_workers(
         let current_value = get_param_value(params, "max_parallel_workers");
         let recommended = cpu;
 
-        if let Some(current_workers) = current_value.parse::<usize>().ok() {
+        if let Ok(current_workers) = current_value.parse::<usize>() {
             if current_workers > recommended {
                 add_suggestion(
                     results,
@@ -145,7 +145,7 @@ fn analyze_max_parallel_workers_per_gather(
         let current_value = get_param_value(params, "max_parallel_workers_per_gather");
         let recommended = (cpu / 2).max(1); // Half vCPU, but at least 1
 
-        if let Some(current_workers) = current_value.parse::<usize>().ok() {
+        if let Ok(current_workers) = current_value.parse::<usize>() {
             if current_workers > cpu {
                 add_suggestion(
                     results,
@@ -204,7 +204,7 @@ fn analyze_max_parallel_maintenance_workers(
         let current_value = get_param_value(params, "max_parallel_maintenance_workers");
         let recommended = (cpu / 2).max(1); // Half vCPU, but at least 1
 
-        if let Some(current_workers) = current_value.parse::<usize>().ok() {
+        if let Ok(current_workers) = current_value.parse::<usize>() {
             if current_workers < recommended {
                 add_suggestion(
                     results,
