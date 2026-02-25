@@ -675,4 +675,64 @@ mod tests {
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].queryid, 1);
     }
+
+    #[test]
+    fn update_statement_produces_candidate_without_parse_failure() {
+        let catalog = IndexCatalog::default();
+        let stat = StatementStat {
+            queryid: 1,
+            query: "UPDATE orders SET status = 'closed' WHERE customer_id = $1".into(),
+            calls: 10,
+            total_time_ms: 1000.0,
+            mean_time_ms: 100.0,
+            max_time_ms: 200.0,
+            rows: 0,
+            shared_blks_read: 0,
+            shared_blks_hit: 0,
+            temp_blks_read: 0,
+            temp_blks_written: 0,
+        };
+
+        let mut results = WorkloadResults::default();
+        let candidates =
+            build_index_candidates(&[stat], &catalog, &WorkloadOptions::default(), &mut results);
+        assert_eq!(results.parse_failures, 0);
+        assert!(candidates.iter().any(|candidate| {
+            candidate.table == "orders"
+                && candidate
+                    .columns
+                    .iter()
+                    .any(|column| column == "customer_id")
+        }));
+    }
+
+    #[test]
+    fn delete_statement_produces_candidate_without_parse_failure() {
+        let catalog = IndexCatalog::default();
+        let stat = StatementStat {
+            queryid: 1,
+            query: "DELETE FROM orders WHERE customer_id = $1".into(),
+            calls: 10,
+            total_time_ms: 1000.0,
+            mean_time_ms: 100.0,
+            max_time_ms: 200.0,
+            rows: 0,
+            shared_blks_read: 0,
+            shared_blks_hit: 0,
+            temp_blks_read: 0,
+            temp_blks_written: 0,
+        };
+
+        let mut results = WorkloadResults::default();
+        let candidates =
+            build_index_candidates(&[stat], &catalog, &WorkloadOptions::default(), &mut results);
+        assert_eq!(results.parse_failures, 0);
+        assert!(candidates.iter().any(|candidate| {
+            candidate.table == "orders"
+                && candidate
+                    .columns
+                    .iter()
+                    .any(|column| column == "customer_id")
+        }));
+    }
 }

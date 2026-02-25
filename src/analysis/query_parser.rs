@@ -1,9 +1,9 @@
 use sqlparser::ast::{
-    BinaryOperator, Expr, Join, JoinConstraint, OrderByExpr, Query, Select, SelectItem, SetExpr,
-    Statement, TableFactor, TableWithJoins,
+    BinaryOperator, Expr, FromTable, Join, JoinConstraint, OrderByExpr, Query, Select, SelectItem,
+    SetExpr, Statement, TableFactor, TableWithJoins,
 };
 use sqlparser::dialect::PostgreSqlDialect;
-use sqlparser::parser::Parser;
+use sqlparser::parser::{Parser, ParserError};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
@@ -48,25 +48,16 @@ enum ColumnKind {
     Order,
 }
 
-pub fn parse_query_columns(
-    query: &str,
-) -> Result<QueryColumnUsage, sqlparser::parser::ParserError> {
+pub fn parse_query_columns(query: &str) -> Result<QueryColumnUsage, ParserError> {
     let dialect = PostgreSqlDialect {};
     let mut statements = Parser::parse_sql(&dialect, query)?;
 
     let statement = statements
         .pop()
-        .ok_or_else(|| sqlparser::parser::ParserError::ParserError("empty query".into()))?;
+        .ok_or_else(|| ParserError::ParserError("empty query".into()))?;
 
     let mut collector = QueryColumnCollector::default();
-    match statement {
-        Statement::Query(query) => collector.collect_query(&query),
-        _ => {
-            return Err(sqlparser::parser::ParserError::ParserError(
-                "unsupported statement".into(),
-            ))
-        }
-    }
+    collector.collect_statement(&statement)?;
 
     Ok(collector.into_usage())
 }
@@ -76,13 +67,81 @@ struct QueryColumnCollector {
     tables: Vec<TableRef>,
     alias_map: HashMap<String, String>,
     pending: Vec<PendingColumn>,
+    resolved_usage_by_table: HashMap<String, TableColumnUsage>,
 }
 
 impl QueryColumnCollector {
+    fn collect_statement(&mut self, statement: &Statement) -> Result<(), ParserError> {
+        match statement {
+            Statement::Query(query) => self.collect_query(query),
+            Statement::Update {
+                table,
+                from,
+                selection,
+                ..
+            } => self.collect_update(table, from, selection),
+            Statement::Delete {
+                from,
+                using,
+                selection,
+                order_by,
+                ..
+            } => self.collect_delete(from, using, selection, order_by),
+            _ => return Err(ParserError::ParserError("unsupported statement".into())),
+        }
+        Ok(())
+    }
+
     fn collect_query(&mut self, query: &Query) {
         self.collect_set_expr(&query.body);
 
         for order in &query.order_by {
+            self.collect_order_by(order);
+        }
+    }
+
+    fn collect_update(
+        &mut self,
+        table: &TableWithJoins,
+        from: &Option<TableWithJoins>,
+        selection: &Option<Expr>,
+    ) {
+        self.collect_table_with_joins(table);
+
+        if let Some(from_table) = from {
+            self.collect_table_with_joins(from_table);
+        }
+
+        if let Some(filter) = selection {
+            self.collect_filter_expr(filter);
+        }
+    }
+
+    fn collect_delete(
+        &mut self,
+        from: &FromTable,
+        using: &Option<Vec<TableWithJoins>>,
+        selection: &Option<Expr>,
+        order_by: &[OrderByExpr],
+    ) {
+        let from_tables = match from {
+            FromTable::WithFromKeyword(tables) | FromTable::WithoutKeyword(tables) => tables,
+        };
+        for table in from_tables {
+            self.collect_table_with_joins(table);
+        }
+
+        if let Some(using_tables) = using {
+            for table in using_tables {
+                self.collect_table_with_joins(table);
+            }
+        }
+
+        if let Some(filter) = selection {
+            self.collect_filter_expr(filter);
+        }
+
+        for order in order_by {
             self.collect_order_by(order);
         }
     }
@@ -146,12 +205,14 @@ impl QueryColumnCollector {
                 }
                 if let Some(alias) = alias {
                     self.alias_map
-                        .insert(alias.name.value.clone(), full_name.clone());
+                        .insert(normalize_ident(&alias.name), full_name.clone());
                 }
                 Some(full_name)
             }
             TableFactor::Derived { subquery, .. } => {
-                self.collect_query(subquery.as_ref());
+                let mut nested = QueryColumnCollector::default();
+                nested.collect_query(subquery.as_ref());
+                self.merge_usage(nested.into_usage());
                 None
             }
             TableFactor::NestedJoin {
@@ -178,14 +239,14 @@ impl QueryColumnCollector {
                         for table in left_tables {
                             self.pending.push(PendingColumn {
                                 relation: Some(table.clone()),
-                                name: column.value.clone(),
+                                name: normalize_ident(column),
                                 kind: ColumnKind::Join,
                             });
                         }
                         if let Some(table) = &right_table {
                             self.pending.push(PendingColumn {
                                 relation: Some(table.clone()),
-                                name: column.value.clone(),
+                                name: normalize_ident(column),
                                 kind: ColumnKind::Join,
                             });
                         }
@@ -260,23 +321,41 @@ impl QueryColumnCollector {
         }
     }
 
-    fn into_usage(self) -> QueryColumnUsage {
-        let mut usage = QueryColumnUsage {
-            tables: self.tables.clone(),
-            ..Default::default()
-        };
+    fn merge_usage(&mut self, usage: QueryColumnUsage) {
+        for table in usage.tables {
+            if !self
+                .tables
+                .iter()
+                .any(|existing| existing.full_name() == table.full_name())
+            {
+                self.tables.push(table);
+            }
+        }
 
-        let default_table = if self.tables.len() == 1 {
-            Some(self.tables[0].full_name())
+        for (table_name, table_usage) in usage.usage_by_table {
+            let entry = self.resolved_usage_by_table.entry(table_name).or_default();
+            merge_table_usage(entry, &table_usage);
+        }
+    }
+
+    fn into_usage(self) -> QueryColumnUsage {
+        let QueryColumnCollector {
+            tables,
+            alias_map,
+            pending,
+            mut resolved_usage_by_table,
+        } = self;
+
+        let default_table = if tables.len() == 1 {
+            Some(tables[0].full_name())
         } else {
             None
         };
 
-        for pending in self.pending {
-            let table =
-                resolve_table_name(pending.relation.as_deref(), &self.alias_map, &default_table);
+        for pending in pending {
+            let table = resolve_table_name(pending.relation.as_deref(), &alias_map, &default_table);
             let Some(table_name) = table else { continue };
-            let entry = usage.usage_by_table.entry(table_name).or_default();
+            let entry = resolved_usage_by_table.entry(table_name).or_default();
             match pending.kind {
                 ColumnKind::Filter => push_unique(&mut entry.filters, &pending.name),
                 ColumnKind::Join => push_unique(&mut entry.joins, &pending.name),
@@ -284,7 +363,10 @@ impl QueryColumnCollector {
             }
         }
 
-        usage
+        QueryColumnUsage {
+            tables,
+            usage_by_table: resolved_usage_by_table,
+        }
     }
 }
 
@@ -298,20 +380,20 @@ fn column_ref_from_expr(expr: &Expr) -> Option<ColumnRef> {
     match expr {
         Expr::Identifier(ident) => Some(ColumnRef {
             relation: None,
-            name: ident.value.clone(),
+            name: normalize_ident(ident),
         }),
         Expr::CompoundIdentifier(idents) => {
             if idents.len() == 2 {
                 Some(ColumnRef {
-                    relation: Some(idents[0].value.clone()),
-                    name: idents[1].value.clone(),
+                    relation: Some(normalize_ident(&idents[0])),
+                    name: normalize_ident(&idents[1]),
                 })
             } else if idents.len() >= 3 {
-                let schema = idents[idents.len() - 3].value.clone();
-                let table = idents[idents.len() - 2].value.clone();
+                let schema = normalize_ident(&idents[idents.len() - 3]);
+                let table = normalize_ident(&idents[idents.len() - 2]);
                 Some(ColumnRef {
                     relation: Some(format!("{}.{}", schema, table)),
-                    name: idents[idents.len() - 1].value.clone(),
+                    name: normalize_ident(&idents[idents.len() - 1]),
                 })
             } else {
                 None
@@ -327,16 +409,13 @@ fn resolve_table_name(
     default_table: &Option<String>,
 ) -> Option<String> {
     match relation {
-        Some(rel) => alias_map
-            .get(rel)
-            .cloned()
-            .or_else(|| alias_map.get(&rel.to_string()).cloned()),
+        Some(rel) => alias_map.get(rel).cloned(),
         None => default_table.clone(),
     }
 }
 
 fn parse_object_name(name: &sqlparser::ast::ObjectName) -> (Option<String>, String) {
-    let parts: Vec<String> = name.0.iter().map(|ident| ident.value.clone()).collect();
+    let parts: Vec<String> = name.0.iter().map(normalize_ident).collect();
     match parts.len() {
         1 => (None, parts[0].clone()),
         2 => (Some(parts[0].clone()), parts[1].clone()),
@@ -348,12 +427,36 @@ fn parse_object_name(name: &sqlparser::ast::ObjectName) -> (Option<String>, Stri
     }
 }
 
+fn normalize_ident(ident: &sqlparser::ast::Ident) -> String {
+    normalize_identifier(&ident.value, ident.quote_style)
+}
+
+fn normalize_identifier(value: &str, quote_style: Option<char>) -> String {
+    if quote_style.is_some() {
+        value.to_string()
+    } else {
+        value.to_ascii_lowercase()
+    }
+}
+
 fn push_unique(values: &mut Vec<String>, value: &str) {
     if !values
         .iter()
         .any(|existing| existing.eq_ignore_ascii_case(value))
     {
         values.push(value.to_string());
+    }
+}
+
+fn merge_table_usage(target: &mut TableColumnUsage, source: &TableColumnUsage) {
+    for value in &source.filters {
+        push_unique(&mut target.filters, value);
+    }
+    for value in &source.joins {
+        push_unique(&mut target.joins, value);
+    }
+    for value in &source.orders {
+        push_unique(&mut target.orders, value);
     }
 }
 
@@ -419,5 +522,120 @@ mod tests {
             .expect("customers");
         assert!(orders.joins.iter().any(|c| c == "customer_id"));
         assert!(customers.joins.iter().any(|c| c == "customer_id"));
+    }
+
+    #[test]
+    fn parses_update_where_columns() {
+        let query = "UPDATE orders SET status = 'closed' WHERE customer_id = $1";
+        let usage = parse_query_columns(query).expect("parse");
+        let orders = usage
+            .usage_by_table
+            .iter()
+            .find(|(k, _)| k.ends_with("orders"))
+            .map(|(_, v)| v)
+            .expect("orders");
+        assert!(orders.filters.iter().any(|c| c == "customer_id"));
+    }
+
+    #[test]
+    fn parses_update_from_join_columns() {
+        let query = "UPDATE orders o SET status = 'closed' FROM customers c WHERE o.customer_id = c.id AND c.region = 'us'";
+        let usage = parse_query_columns(query).expect("parse");
+        let orders = usage
+            .usage_by_table
+            .iter()
+            .find(|(k, _)| k.ends_with("orders"))
+            .map(|(_, v)| v)
+            .expect("orders");
+        let customers = usage
+            .usage_by_table
+            .iter()
+            .find(|(k, _)| k.ends_with("customers"))
+            .map(|(_, v)| v)
+            .expect("customers");
+        assert!(orders.filters.iter().any(|c| c == "customer_id"));
+        assert!(customers.filters.iter().any(|c| c == "id"));
+        assert!(customers.filters.iter().any(|c| c == "region"));
+    }
+
+    #[test]
+    fn parses_delete_where_columns() {
+        let query = "DELETE FROM orders WHERE customer_id = $1";
+        let usage = parse_query_columns(query).expect("parse");
+        let orders = usage
+            .usage_by_table
+            .iter()
+            .find(|(k, _)| k.ends_with("orders"))
+            .map(|(_, v)| v)
+            .expect("orders");
+        assert!(orders.filters.iter().any(|c| c == "customer_id"));
+    }
+
+    #[test]
+    fn parses_delete_using_join_columns() {
+        let query =
+            "DELETE FROM orders o USING customers c WHERE o.customer_id = c.id AND c.region = 'us'";
+        let usage = parse_query_columns(query).expect("parse");
+        let orders = usage
+            .usage_by_table
+            .iter()
+            .find(|(k, _)| k.ends_with("orders"))
+            .map(|(_, v)| v)
+            .expect("orders");
+        let customers = usage
+            .usage_by_table
+            .iter()
+            .find(|(k, _)| k.ends_with("customers"))
+            .map(|(_, v)| v)
+            .expect("customers");
+        assert!(orders.filters.iter().any(|c| c == "customer_id"));
+        assert!(customers.filters.iter().any(|c| c == "id"));
+        assert!(customers.filters.iter().any(|c| c == "region"));
+    }
+
+    #[test]
+    fn derived_subquery_alias_does_not_leak() {
+        let query = "SELECT * FROM orders o JOIN (SELECT customer_id FROM customers o WHERE o.region = 'us') d ON d.customer_id = o.customer_id WHERE o.status = 'open'";
+        let usage = parse_query_columns(query).expect("parse");
+        let orders = usage
+            .usage_by_table
+            .iter()
+            .find(|(k, _)| k.ends_with("orders"))
+            .map(|(_, v)| v)
+            .expect("orders");
+        let customers = usage
+            .usage_by_table
+            .iter()
+            .find(|(k, _)| k.ends_with("customers"))
+            .map(|(_, v)| v)
+            .expect("customers");
+        assert!(orders.filters.iter().any(|c| c == "status"));
+        assert!(!customers.filters.iter().any(|c| c == "status"));
+    }
+
+    #[test]
+    fn alias_lookup_is_case_insensitive_for_unquoted_identifiers() {
+        let query = "SELECT * FROM orders O WHERE o.customer_id = $1";
+        let usage = parse_query_columns(query).expect("parse");
+        let orders = usage
+            .usage_by_table
+            .iter()
+            .find(|(k, _)| k.ends_with("orders"))
+            .map(|(_, v)| v)
+            .expect("orders");
+        assert!(orders.filters.iter().any(|c| c == "customer_id"));
+    }
+
+    #[test]
+    fn quoted_alias_remains_case_sensitive() {
+        let query = "SELECT * FROM orders AS \"O\" WHERE o.customer_id = $1";
+        let usage = parse_query_columns(query).expect("parse");
+        let has_customer_filter = usage
+            .usage_by_table
+            .iter()
+            .find(|(k, _)| k.ends_with("orders"))
+            .map(|(_, table_usage)| table_usage.filters.iter().any(|c| c == "customer_id"))
+            .unwrap_or(false);
+        assert!(!has_customer_filter);
     }
 }
