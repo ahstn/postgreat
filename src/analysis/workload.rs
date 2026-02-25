@@ -119,19 +119,18 @@ pub async fn analyze(
 }
 
 async fn pg_stat_statements_installed(pool: &Pool<Postgres>) -> Result<bool, CheckerError> {
-    let query = "SELECT 1 FROM pg_extension WHERE extname = 'pg_stat_statements' LIMIT 1";
-    let exists = query_scalar::<_, i64>(query)
-        .fetch_optional(pool)
+    let query = "SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname = 'pg_stat_statements')";
+    query_scalar::<_, bool>(query)
+        .fetch_one(pool)
         .await
         .map_err(|source| CheckerError::QueryError {
             query: query.into(),
             source,
-        })?;
-    Ok(exists.is_some())
+        })
 }
 
 async fn fetch_server_version(pool: &Pool<Postgres>) -> Result<i64, CheckerError> {
-    let query = "SELECT current_setting('server_version_num')::int";
+    let query = "SELECT current_setting('server_version_num')::bigint";
     query_scalar::<_, i64>(query)
         .fetch_one(pool)
         .await
@@ -143,17 +142,18 @@ async fn fetch_server_version(pool: &Pool<Postgres>) -> Result<i64, CheckerError
 
 async fn detect_pg_stat_statements_version(pool: &Pool<Postgres>) -> Option<i64> {
     let query = r#"
-        SELECT 1
-        FROM information_schema.columns
-        WHERE table_name = 'pg_stat_statements'
-          AND column_name = 'total_exec_time'
-        LIMIT 1
+        SELECT EXISTS(
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_name = 'pg_stat_statements'
+              AND column_name = 'total_exec_time'
+        )
     "#;
-    query_scalar::<_, i64>(query)
-        .fetch_optional(pool)
+    query_scalar::<_, bool>(query)
+        .fetch_one(pool)
         .await
         .ok()
-        .flatten()
+        .filter(|exists| *exists)
         .map(|_| 130000)
 }
 

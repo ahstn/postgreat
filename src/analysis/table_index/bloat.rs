@@ -88,20 +88,38 @@ async fn fetch_table_stats(pool: &Pool<Postgres>) -> Result<Vec<TableStatRow>, C
         stats.push(TableStatRow {
             schema: row.get("schemaname"),
             table_name: row.get("relname"),
-            live_tuples: row.get("n_live_tup"),
-            dead_tuples: row.get("n_dead_tup"),
-            seq_scan: row.get("seq_scan"),
-            idx_scan: row.get("idx_scan"),
+            live_tuples: get_i64_or_zero(&row, "n_live_tup"),
+            dead_tuples: get_i64_or_zero(&row, "n_dead_tup"),
+            seq_scan: get_i64_or_zero(&row, "seq_scan"),
+            idx_scan: get_i64_or_zero(&row, "idx_scan"),
             table_size_bytes: row.get("table_size_bytes"),
             table_size_pretty: row.get("table_size_pretty"),
-            last_autovacuum: row.get("last_autovacuum_text"),
-            last_autoanalyze: row.get("last_autoanalyze_text"),
-            seconds_since_last_autovacuum: row.get("seconds_since_last_autovacuum"),
-            seconds_since_last_autoanalyze: row.get("seconds_since_last_autoanalyze"),
+            last_autovacuum: get_optional_string(&row, "last_autovacuum_text"),
+            last_autoanalyze: get_optional_string(&row, "last_autoanalyze_text"),
+            seconds_since_last_autovacuum: get_optional_f64(&row, "seconds_since_last_autovacuum"),
+            seconds_since_last_autoanalyze: get_optional_f64(
+                &row,
+                "seconds_since_last_autoanalyze",
+            ),
         });
     }
 
     Ok(stats)
+}
+
+fn get_i64_or_zero(row: &sqlx::postgres::PgRow, column: &str) -> i64 {
+    row.try_get::<Option<i64>, _>(column)
+        .ok()
+        .flatten()
+        .unwrap_or(0)
+}
+
+fn get_optional_string(row: &sqlx::postgres::PgRow, column: &str) -> Option<String> {
+    row.try_get::<Option<String>, _>(column).ok().flatten()
+}
+
+fn get_optional_f64(row: &sqlx::postgres::PgRow, column: &str) -> Option<f64> {
+    row.try_get::<Option<f64>, _>(column).ok().flatten()
 }
 
 fn identify_bloat_tables(rows: &[TableStatRow]) -> Vec<TableBloatInfo> {
