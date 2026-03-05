@@ -624,6 +624,7 @@ impl WorkloadReporter {
 
         for group in &results.slow_query_groups {
             writeln!(handle, "## {}\n", format_slow_query_kind(group.kind)).context(OutputSnafu)?;
+            writeln!(handle, "{}\n", describe_slow_query_kind(group.kind)).context(OutputSnafu)?;
             if group.queries.is_empty() {
                 writeln!(handle, "No queries matched the filters.\n").context(OutputSnafu)?;
                 continue;
@@ -856,6 +857,7 @@ impl WorkloadReporter {
 
         for group in &results.slow_query_groups {
             writeln!(handle, "{}:", format_slow_query_kind(group.kind)).context(OutputSnafu)?;
+            writeln!(handle, "  {}", describe_slow_query_kind(group.kind)).context(OutputSnafu)?;
             for query in &group.queries {
                 writeln!(
                     handle,
@@ -919,6 +921,23 @@ fn format_slow_query_kind(kind: SlowQueryKind) -> &'static str {
         SlowQueryKind::MeanTime => "Slow Queries by Mean Time",
         SlowQueryKind::SharedBlksRead => "Slow Queries by Shared Blocks Read",
         SlowQueryKind::TempBlksWritten => "Slow Queries by Temp Blocks Written",
+    }
+}
+
+fn describe_slow_query_kind(kind: SlowQueryKind) -> &'static str {
+    match kind {
+        SlowQueryKind::TotalTime => {
+            "Shows which statements consume the most cumulative execution time across all calls, useful for finding the biggest overall throughput drains."
+        }
+        SlowQueryKind::MeanTime => {
+            "Shows which statements are slow per execution, useful for reducing end-user latency and fixing expensive query plans."
+        }
+        SlowQueryKind::SharedBlksRead => {
+            "Highlights statements that perform the most disk-backed reads into shared buffers, useful for spotting I/O-heavy access patterns and missing indexes."
+        }
+        SlowQueryKind::TempBlksWritten => {
+            "Highlights statements that spill the most temporary blocks, useful for identifying costly sort/hash operations and memory pressure."
+        }
     }
 }
 
