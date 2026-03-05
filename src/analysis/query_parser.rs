@@ -23,8 +23,9 @@ impl TableRef {
 
 #[derive(Debug, Clone, Default)]
 pub struct TableColumnUsage {
-    pub filters: Vec<String>,
-    pub joins: Vec<String>,
+    pub equality_filters: Vec<String>,
+    pub non_equality_filters: Vec<String>,
+    pub equality_joins: Vec<String>,
     pub orders: Vec<String>,
 }
 
@@ -43,8 +44,9 @@ struct PendingColumn {
 
 #[derive(Debug, Clone, Copy)]
 enum ColumnKind {
-    Filter,
-    Join,
+    EqualityFilter,
+    NonEqualityFilter,
+    EqualityJoin,
     Order,
 }
 
@@ -240,14 +242,14 @@ impl QueryColumnCollector {
                             self.pending.push(PendingColumn {
                                 relation: Some(table.clone()),
                                 name: normalize_ident(column),
-                                kind: ColumnKind::Join,
+                                kind: ColumnKind::EqualityJoin,
                             });
                         }
                         if let Some(table) = &right_table {
                             self.pending.push(PendingColumn {
                                 relation: Some(table.clone()),
                                 name: normalize_ident(column),
-                                kind: ColumnKind::Join,
+                                kind: ColumnKind::EqualityJoin,
                             });
                         }
                     }
@@ -268,15 +270,18 @@ impl QueryColumnCollector {
                     self.collect_filter_expr(right);
                 }
                 BinaryOperator::Eq => {
-                    self.push_column_if_applicable(left, ColumnKind::Filter);
-                    self.push_column_if_applicable(right, ColumnKind::Filter);
+                    self.collect_equality_predicate(left, right, ColumnKind::EqualityFilter);
                 }
-                _ => {}
+                _ => self.collect_non_equality_predicate(left, right),
             },
-            Expr::InList { expr, .. } => self.push_column_if_applicable(expr, ColumnKind::Filter),
-            Expr::Between { expr, .. } => self.push_column_if_applicable(expr, ColumnKind::Filter),
+            Expr::InList { expr, .. } => {
+                self.push_column_if_applicable(expr, ColumnKind::NonEqualityFilter)
+            }
+            Expr::Between { expr, .. } => {
+                self.push_column_if_applicable(expr, ColumnKind::NonEqualityFilter)
+            }
             Expr::IsNull(expr) | Expr::IsNotNull(expr) => {
-                self.push_column_if_applicable(expr, ColumnKind::Filter)
+                self.push_column_if_applicable(expr, ColumnKind::NonEqualityFilter)
             }
             Expr::Nested(expr) => self.collect_filter_expr(expr),
             _ => {}
@@ -291,8 +296,7 @@ impl QueryColumnCollector {
                     self.collect_join_expr(right);
                 }
                 BinaryOperator::Eq => {
-                    self.push_column_if_applicable(left, ColumnKind::Join);
-                    self.push_column_if_applicable(right, ColumnKind::Join);
+                    self.collect_equality_predicate(left, right, ColumnKind::EqualityJoin);
                 }
                 _ => {}
             },
@@ -319,6 +323,32 @@ impl QueryColumnCollector {
                 kind,
             });
         }
+    }
+
+    fn collect_equality_predicate(&mut self, left: &Expr, right: &Expr, default_kind: ColumnKind) {
+        match (column_ref_from_expr(left), column_ref_from_expr(right)) {
+            (Some(left_column), Some(right_column)) => {
+                self.pending.push(PendingColumn {
+                    relation: left_column.relation,
+                    name: left_column.name,
+                    kind: ColumnKind::EqualityJoin,
+                });
+                self.pending.push(PendingColumn {
+                    relation: right_column.relation,
+                    name: right_column.name,
+                    kind: ColumnKind::EqualityJoin,
+                });
+            }
+            _ => {
+                self.push_column_if_applicable(left, default_kind);
+                self.push_column_if_applicable(right, default_kind);
+            }
+        }
+    }
+
+    fn collect_non_equality_predicate(&mut self, left: &Expr, right: &Expr) {
+        self.push_column_if_applicable(left, ColumnKind::NonEqualityFilter);
+        self.push_column_if_applicable(right, ColumnKind::NonEqualityFilter);
     }
 
     fn merge_usage(&mut self, usage: QueryColumnUsage) {
@@ -357,8 +387,13 @@ impl QueryColumnCollector {
             let Some(table_name) = table else { continue };
             let entry = resolved_usage_by_table.entry(table_name).or_default();
             match pending.kind {
-                ColumnKind::Filter => push_unique(&mut entry.filters, &pending.name),
-                ColumnKind::Join => push_unique(&mut entry.joins, &pending.name),
+                ColumnKind::EqualityFilter => {
+                    push_unique(&mut entry.equality_filters, &pending.name)
+                }
+                ColumnKind::NonEqualityFilter => {
+                    push_unique(&mut entry.non_equality_filters, &pending.name)
+                }
+                ColumnKind::EqualityJoin => push_unique(&mut entry.equality_joins, &pending.name),
                 ColumnKind::Order => push_unique(&mut entry.orders, &pending.name),
             }
         }
@@ -449,11 +484,14 @@ fn push_unique(values: &mut Vec<String>, value: &str) {
 }
 
 fn merge_table_usage(target: &mut TableColumnUsage, source: &TableColumnUsage) {
-    for value in &source.filters {
-        push_unique(&mut target.filters, value);
+    for value in &source.equality_filters {
+        push_unique(&mut target.equality_filters, value);
     }
-    for value in &source.joins {
-        push_unique(&mut target.joins, value);
+    for value in &source.non_equality_filters {
+        push_unique(&mut target.non_equality_filters, value);
+    }
+    for value in &source.equality_joins {
+        push_unique(&mut target.equality_joins, value);
     }
     for value in &source.orders {
         push_unique(&mut target.orders, value);
@@ -471,7 +509,10 @@ mod tests {
         assert_eq!(usage.tables.len(), 1);
         let table = usage.tables[0].full_name();
         let table_usage = usage.usage_by_table.get(&table).expect("table usage");
-        assert!(table_usage.filters.iter().any(|c| c == "customer_id"));
+        assert!(table_usage
+            .equality_filters
+            .iter()
+            .any(|c| c == "customer_id"));
         assert!(table_usage.orders.iter().any(|c| c == "created_at"));
     }
 
@@ -486,8 +527,8 @@ mod tests {
             .find(|(k, _)| k.ends_with("orders"))
             .map(|(_, v)| v)
             .expect("orders");
-        assert!(orders.joins.iter().any(|c| c == "customer_id"));
-        assert!(orders.filters.iter().any(|c| c == "status"));
+        assert!(orders.equality_joins.iter().any(|c| c == "customer_id"));
+        assert!(orders.equality_filters.iter().any(|c| c == "status"));
     }
 
     #[test]
@@ -501,7 +542,7 @@ mod tests {
             .find(|(k, _)| k.ends_with("orders"))
             .map(|(_, v)| v)
             .expect("orders");
-        assert!(!orders.filters.iter().any(|c| c == "status"));
+        assert!(!orders.equality_filters.iter().any(|c| c == "status"));
     }
 
     #[test]
@@ -520,8 +561,8 @@ mod tests {
             .find(|(k, _)| k.ends_with("customers"))
             .map(|(_, v)| v)
             .expect("customers");
-        assert!(orders.joins.iter().any(|c| c == "customer_id"));
-        assert!(customers.joins.iter().any(|c| c == "customer_id"));
+        assert!(orders.equality_joins.iter().any(|c| c == "customer_id"));
+        assert!(customers.equality_joins.iter().any(|c| c == "customer_id"));
     }
 
     #[test]
@@ -534,7 +575,7 @@ mod tests {
             .find(|(k, _)| k.ends_with("orders"))
             .map(|(_, v)| v)
             .expect("orders");
-        assert!(orders.filters.iter().any(|c| c == "customer_id"));
+        assert!(orders.equality_filters.iter().any(|c| c == "customer_id"));
     }
 
     #[test]
@@ -553,9 +594,9 @@ mod tests {
             .find(|(k, _)| k.ends_with("customers"))
             .map(|(_, v)| v)
             .expect("customers");
-        assert!(orders.filters.iter().any(|c| c == "customer_id"));
-        assert!(customers.filters.iter().any(|c| c == "id"));
-        assert!(customers.filters.iter().any(|c| c == "region"));
+        assert!(orders.equality_joins.iter().any(|c| c == "customer_id"));
+        assert!(customers.equality_joins.iter().any(|c| c == "id"));
+        assert!(customers.equality_filters.iter().any(|c| c == "region"));
     }
 
     #[test]
@@ -568,7 +609,7 @@ mod tests {
             .find(|(k, _)| k.ends_with("orders"))
             .map(|(_, v)| v)
             .expect("orders");
-        assert!(orders.filters.iter().any(|c| c == "customer_id"));
+        assert!(orders.equality_filters.iter().any(|c| c == "customer_id"));
     }
 
     #[test]
@@ -588,9 +629,9 @@ mod tests {
             .find(|(k, _)| k.ends_with("customers"))
             .map(|(_, v)| v)
             .expect("customers");
-        assert!(orders.filters.iter().any(|c| c == "customer_id"));
-        assert!(customers.filters.iter().any(|c| c == "id"));
-        assert!(customers.filters.iter().any(|c| c == "region"));
+        assert!(orders.equality_joins.iter().any(|c| c == "customer_id"));
+        assert!(customers.equality_joins.iter().any(|c| c == "id"));
+        assert!(customers.equality_filters.iter().any(|c| c == "region"));
     }
 
     #[test]
@@ -609,8 +650,8 @@ mod tests {
             .find(|(k, _)| k.ends_with("customers"))
             .map(|(_, v)| v)
             .expect("customers");
-        assert!(orders.filters.iter().any(|c| c == "status"));
-        assert!(!customers.filters.iter().any(|c| c == "status"));
+        assert!(orders.equality_filters.iter().any(|c| c == "status"));
+        assert!(!customers.equality_filters.iter().any(|c| c == "status"));
     }
 
     #[test]
@@ -623,7 +664,7 @@ mod tests {
             .find(|(k, _)| k.ends_with("orders"))
             .map(|(_, v)| v)
             .expect("orders");
-        assert!(orders.filters.iter().any(|c| c == "customer_id"));
+        assert!(orders.equality_filters.iter().any(|c| c == "customer_id"));
     }
 
     #[test]
@@ -634,8 +675,34 @@ mod tests {
             .usage_by_table
             .iter()
             .find(|(k, _)| k.ends_with("orders"))
-            .map(|(_, table_usage)| table_usage.filters.iter().any(|c| c == "customer_id"))
+            .map(|(_, table_usage)| {
+                table_usage
+                    .equality_filters
+                    .iter()
+                    .any(|c| c == "customer_id")
+            })
             .unwrap_or(false);
         assert!(!has_customer_filter);
+    }
+
+    #[test]
+    fn classifies_non_equality_filters_separately() {
+        let query =
+            "SELECT * FROM orders WHERE created_at BETWEEN $1 AND $2 AND archived_at IS NULL";
+        let usage = parse_query_columns(query).expect("parse");
+        let orders = usage
+            .usage_by_table
+            .iter()
+            .find(|(k, _)| k.ends_with("orders"))
+            .map(|(_, v)| v)
+            .expect("orders");
+        assert!(orders
+            .non_equality_filters
+            .iter()
+            .any(|c| c == "created_at"));
+        assert!(orders
+            .non_equality_filters
+            .iter()
+            .any(|c| c == "archived_at"));
     }
 }

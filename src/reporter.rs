@@ -603,24 +603,24 @@ impl WorkloadReporter {
     }
 
     fn report_markdown(&self, results: &WorkloadResults) -> Result<()> {
-        use std::io::Write;
-
         let stdout = std::io::stdout();
         let mut handle = stdout.lock();
+        self.write_workload_markdown(&mut handle, results)
+    }
 
+    fn write_workload_markdown<W: std::io::Write>(
+        &self,
+        handle: &mut W,
+        results: &WorkloadResults,
+    ) -> Result<()> {
         writeln!(handle, "# PostgreSQL Workload Analysis Report\n").context(OutputSnafu)?;
+        self.write_workload_summary_markdown(handle, results)?;
 
-        writeln!(handle, "## Summary\n").context(OutputSnafu)?;
-        if results.warnings.is_empty() {
-            writeln!(handle, "- **Warnings**: None").context(OutputSnafu)?;
-        } else {
-            for warning in &results.warnings {
-                writeln!(handle, "- **Warning**: {}", warning).context(OutputSnafu)?;
-            }
-        }
-        writeln!(handle, "- **Parse failures**: {}", results.parse_failures)
-            .context(OutputSnafu)?;
-        writeln!(handle).context(OutputSnafu)?;
+        let show_wal = results
+            .slow_query_groups
+            .iter()
+            .flat_map(|group| group.queries.iter())
+            .any(|query| query.wal_bytes_per_call.is_some());
 
         for group in &results.slow_query_groups {
             writeln!(handle, "## {}\n", format_slow_query_kind(group.kind)).context(OutputSnafu)?;
@@ -630,31 +630,69 @@ impl WorkloadReporter {
                 continue;
             }
 
-            writeln!(
-                handle,
-                "| Query ID | Calls | Total ms | Mean ms | Max ms | Rows | Shared Read | Temp Written | Query |"
-            )
-            .context(OutputSnafu)?;
-            writeln!(
-                handle,
-                "|---------|-------|----------|---------|--------|------|-------------|--------------|-------|"
-            )
-            .context(OutputSnafu)?;
-            for query in &group.queries {
+            if show_wal {
                 writeln!(
                     handle,
-                    "| {} | {} | {:.2} | {:.2} | {:.2} | {} | {} | {} | {} |",
-                    query.queryid,
-                    query.calls,
-                    query.total_time_ms,
-                    query.mean_time_ms,
-                    query.max_time_ms,
-                    query.rows,
-                    query.shared_blks_read,
-                    query.temp_blks_written,
-                    query.query_text.replace('|', "\\|")
+                    "| Query ID | Calls | Total ms | % Total | Mean ms | Max ms | Rows | Shared Read | Temp Written | Cache Hit % | Temp/call | WAL/call | Query |"
                 )
                 .context(OutputSnafu)?;
+                writeln!(
+                    handle,
+                    "|---------|-------|----------|---------|---------|--------|------|-------------|--------------|-------------|-----------|----------|-------|"
+                )
+                .context(OutputSnafu)?;
+            } else {
+                writeln!(
+                    handle,
+                    "| Query ID | Calls | Total ms | % Total | Mean ms | Max ms | Rows | Shared Read | Temp Written | Cache Hit % | Temp/call | Query |"
+                )
+                .context(OutputSnafu)?;
+                writeln!(
+                    handle,
+                    "|---------|-------|----------|---------|---------|--------|------|-------------|--------------|-------------|-----------|-------|"
+                )
+                .context(OutputSnafu)?;
+            }
+
+            for query in &group.queries {
+                if show_wal {
+                    writeln!(
+                        handle,
+                        "| {} | {} | {:.2} | {:.1}% | {:.2} | {:.2} | {} | {} | {} | {} | {} | {} | {} |",
+                        query.queryid,
+                        query.calls,
+                        query.total_time_ms,
+                        query.total_time_pct,
+                        query.mean_time_ms,
+                        query.max_time_ms,
+                        query.rows,
+                        query.shared_blks_read,
+                        query.temp_blks_written,
+                        format_optional_pct(query.cache_hit_ratio),
+                        format_optional_f64(query.temp_blks_written_per_call, " blocks"),
+                        format_optional_i64_per_call(query.wal_bytes_per_call, " bytes"),
+                        query.query_text.replace('|', "\\|")
+                    )
+                    .context(OutputSnafu)?;
+                } else {
+                    writeln!(
+                        handle,
+                        "| {} | {} | {:.2} | {:.1}% | {:.2} | {:.2} | {} | {} | {} | {} | {} | {} |",
+                        query.queryid,
+                        query.calls,
+                        query.total_time_ms,
+                        query.total_time_pct,
+                        query.mean_time_ms,
+                        query.max_time_ms,
+                        query.rows,
+                        query.shared_blks_read,
+                        query.temp_blks_written,
+                        format_optional_pct(query.cache_hit_ratio),
+                        format_optional_f64(query.temp_blks_written_per_call, " blocks"),
+                        query.query_text.replace('|', "\\|")
+                    )
+                    .context(OutputSnafu)?;
+                }
             }
             writeln!(handle).context(OutputSnafu)?;
         }
@@ -663,25 +701,28 @@ impl WorkloadReporter {
             writeln!(handle, "## Index Candidates (Heuristic)\n").context(OutputSnafu)?;
             writeln!(
                 handle,
-                "| Table | Columns | Calls | Total ms | Mean ms | Query ID | Reason |"
+                "| Table | Columns | Confidence | Calls | Total ms | Mean ms | Query ID | Evidence | Notes | Reason |"
             )
             .context(OutputSnafu)?;
             writeln!(
                 handle,
-                "|-------|---------|-------|----------|---------|----------|--------|"
+                "|-------|---------|------------|-------|----------|---------|----------|----------|-------|--------|"
             )
             .context(OutputSnafu)?;
             for candidate in &results.query_index_candidates {
                 writeln!(
                     handle,
-                    "| {}.{} | {} | {} | {:.2} | {:.2} | {} | {} |",
+                    "| {}.{} | {} | {} | {} | {:.2} | {:.2} | {} | {} | {} | {} |",
                     candidate.schema,
                     candidate.table,
                     candidate.columns.join(", "),
+                    candidate.confidence.as_str(),
                     candidate.calls,
                     candidate.total_time_ms,
                     candidate.mean_time_ms,
                     candidate.queryid,
+                    format_candidate_evidence(&candidate.evidence).replace('|', "\\|"),
+                    format_notes(&candidate.notes).replace('|', "\\|"),
                     candidate.reason.replace('|', "\\|")
                 )
                 .context(OutputSnafu)?;
@@ -699,13 +740,104 @@ impl WorkloadReporter {
         Ok(())
     }
 
-    fn write_table_index_markdown(
+    fn write_workload_summary_markdown<W: std::io::Write>(
         &self,
-        mut handle: std::io::StdoutLock,
+        handle: &mut W,
         results: &WorkloadResults,
     ) -> Result<()> {
-        use std::io::Write;
+        writeln!(handle, "## Summary\n").context(OutputSnafu)?;
+        writeln!(
+            handle,
+            "- **Data source**: `{}`",
+            results.workload_metadata.data_source
+        )
+        .context(OutputSnafu)?;
+        writeln!(handle, "- **Scope**: `{}`", results.workload_metadata.scope)
+            .context(OutputSnafu)?;
+        writeln!(
+            handle,
+            "- **Stats reset at**: {}",
+            results
+                .workload_metadata
+                .stats_reset_at
+                .as_deref()
+                .unwrap_or("unknown")
+        )
+        .context(OutputSnafu)?;
+        writeln!(
+            handle,
+            "- **Entry deallocations**: {}",
+            results
+                .workload_metadata
+                .entry_deallocations
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "unknown".to_string())
+        )
+        .context(OutputSnafu)?;
+        writeln!(
+            handle,
+            "- **Server version**: {}",
+            results
+                .workload_metadata
+                .server_version
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "unknown".to_string())
+        )
+        .context(OutputSnafu)?;
+        writeln!(
+            handle,
+            "- **Query text visible**: {}",
+            if results.workload_metadata.query_text_visible {
+                "yes"
+            } else {
+                "no"
+            }
+        )
+        .context(OutputSnafu)?;
+        writeln!(
+            handle,
+            "- **Parsed queries**: {}",
+            results.workload_metadata.parsed_queries
+        )
+        .context(OutputSnafu)?;
+        writeln!(
+            handle,
+            "- **Parse failures**: {}",
+            results.workload_metadata.parse_failures
+        )
+        .context(OutputSnafu)?;
+        writeln!(
+            handle,
+            "- **Suppressed candidates**: {}",
+            results.workload_metadata.suppressed_candidates
+        )
+        .context(OutputSnafu)?;
+        writeln!(
+            handle,
+            "- **Coverage summary**: {} suppressed by existing indexes, {} internal tables skipped, {} unresolved-schema tables skipped, {} unsupported parse shapes, {} parser errors",
+            results.coverage_stats.suppressed_by_existing_index,
+            results.coverage_stats.skipped_internal_tables,
+            results.coverage_stats.skipped_unresolved_schema,
+            results.coverage_stats.skipped_unsupported_parse_shape,
+            results.coverage_stats.parser_errors
+        )
+        .context(OutputSnafu)?;
+        if results.warnings.is_empty() {
+            writeln!(handle, "- **Warnings**: None").context(OutputSnafu)?;
+        } else {
+            for warning in &results.warnings {
+                writeln!(handle, "- **Warning**: {}", warning).context(OutputSnafu)?;
+            }
+        }
+        writeln!(handle).context(OutputSnafu)?;
+        Ok(())
+    }
 
+    fn write_table_index_markdown<W: std::io::Write>(
+        &self,
+        handle: &mut W,
+        results: &WorkloadResults,
+    ) -> Result<()> {
         writeln!(handle, "## Table & Index Health\n").context(OutputSnafu)?;
 
         if !results.bloat_info.is_empty() {
@@ -830,9 +962,22 @@ impl WorkloadReporter {
     }
 
     fn report_json(&self, results: &WorkloadResults) -> Result<()> {
-        use std::io::Write;
         let stdout = std::io::stdout();
         let mut handle = stdout.lock();
+        self.write_workload_json(&mut handle, results)
+    }
+
+    fn report_text(&self, results: &WorkloadResults) -> Result<()> {
+        let stdout = std::io::stdout();
+        let mut handle = stdout.lock();
+        self.write_workload_text(&mut handle, results)
+    }
+
+    fn write_workload_json<W: std::io::Write>(
+        &self,
+        handle: &mut W,
+        results: &WorkloadResults,
+    ) -> Result<()> {
         let json =
             serde_json::to_string_pretty(results).map_err(|err| ReporterError::OutputError {
                 source: std::io::Error::other(err),
@@ -841,18 +986,71 @@ impl WorkloadReporter {
         Ok(())
     }
 
-    fn report_text(&self, results: &WorkloadResults) -> Result<()> {
-        use std::io::Write;
-        let stdout = std::io::stdout();
-        let mut handle = stdout.lock();
-
+    fn write_workload_text<W: std::io::Write>(
+        &self,
+        handle: &mut W,
+        results: &WorkloadResults,
+    ) -> Result<()> {
         writeln!(handle, "PostgreSQL Workload Analysis Report").context(OutputSnafu)?;
+        writeln!(
+            handle,
+            "Data source: {} ({})",
+            results.workload_metadata.data_source, results.workload_metadata.scope
+        )
+        .context(OutputSnafu)?;
+        writeln!(
+            handle,
+            "Stats reset at: {}",
+            results
+                .workload_metadata
+                .stats_reset_at
+                .as_deref()
+                .unwrap_or("unknown")
+        )
+        .context(OutputSnafu)?;
+        writeln!(
+            handle,
+            "Entry deallocations: {}",
+            results
+                .workload_metadata
+                .entry_deallocations
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "unknown".to_string())
+        )
+        .context(OutputSnafu)?;
+        writeln!(
+            handle,
+            "Query text visible: {}",
+            if results.workload_metadata.query_text_visible {
+                "yes"
+            } else {
+                "no"
+            }
+        )
+        .context(OutputSnafu)?;
+        writeln!(
+            handle,
+            "Parsed queries: {}, parse failures: {}, suppressed candidates: {}",
+            results.workload_metadata.parsed_queries,
+            results.workload_metadata.parse_failures,
+            results.workload_metadata.suppressed_candidates
+        )
+        .context(OutputSnafu)?;
+        writeln!(
+            handle,
+            "Coverage summary: {} suppressed, {} internal, {} unresolved-schema, {} unsupported shapes, {} parser errors",
+            results.coverage_stats.suppressed_by_existing_index,
+            results.coverage_stats.skipped_internal_tables,
+            results.coverage_stats.skipped_unresolved_schema,
+            results.coverage_stats.skipped_unsupported_parse_shape,
+            results.coverage_stats.parser_errors
+        )
+        .context(OutputSnafu)?;
         if !results.warnings.is_empty() {
             for warning in &results.warnings {
                 writeln!(handle, "Warning: {warning}").context(OutputSnafu)?;
             }
         }
-        writeln!(handle, "Parse failures: {}", results.parse_failures).context(OutputSnafu)?;
         writeln!(handle).context(OutputSnafu)?;
 
         for group in &results.slow_query_groups {
@@ -861,10 +1059,20 @@ impl WorkloadReporter {
             for query in &group.queries {
                 writeln!(
                     handle,
-                    "  - {} calls, total {:.2}ms, mean {:.2}ms, queryid {}",
-                    query.calls, query.total_time_ms, query.mean_time_ms, query.queryid
+                    "  - {} calls, total {:.2}ms ({:.1}% of measured total), mean {:.2}ms, cache hit {}, temp/call {}, queryid {}",
+                    query.calls,
+                    query.total_time_ms,
+                    query.total_time_pct,
+                    query.mean_time_ms,
+                    format_optional_pct(query.cache_hit_ratio),
+                    format_optional_f64(query.temp_blks_written_per_call, " blocks"),
+                    query.queryid
                 )
                 .context(OutputSnafu)?;
+                if let Some(wal_bytes_per_call) = query.wal_bytes_per_call {
+                    writeln!(handle, "    WAL/call: {:.1} bytes", wal_bytes_per_call)
+                        .context(OutputSnafu)?;
+                }
             }
             writeln!(handle).context(OutputSnafu)?;
         }
@@ -874,12 +1082,23 @@ impl WorkloadReporter {
             for candidate in &results.query_index_candidates {
                 writeln!(
                     handle,
-                    "  - {}.{} ({})",
+                    "  - {}.{} ({}) [{}]",
                     candidate.schema,
                     candidate.table,
-                    candidate.columns.join(", ")
+                    candidate.columns.join(", "),
+                    candidate.confidence.as_str()
                 )
                 .context(OutputSnafu)?;
+                writeln!(
+                    handle,
+                    "    evidence: {}",
+                    format_candidate_evidence(&candidate.evidence)
+                )
+                .context(OutputSnafu)?;
+                if !candidate.notes.is_empty() {
+                    writeln!(handle, "    notes: {}", format_notes(&candidate.notes))
+                        .context(OutputSnafu)?;
+                }
             }
             writeln!(handle).context(OutputSnafu)?;
         }
@@ -915,6 +1134,56 @@ impl WorkloadReporter {
     }
 }
 
+fn format_candidate_evidence(evidence: &crate::models::QueryIndexEvidence) -> String {
+    let mut parts = Vec::new();
+    if !evidence.equality_filters.is_empty() {
+        parts.push(format!("WHERE = {}", evidence.equality_filters.join(", ")));
+    }
+    if !evidence.non_equality_filters.is_empty() {
+        parts.push(format!(
+            "WHERE range {}",
+            evidence.non_equality_filters.join(", ")
+        ));
+    }
+    if !evidence.equality_joins.is_empty() {
+        parts.push(format!("JOIN = {}", evidence.equality_joins.join(", ")));
+    }
+    if !evidence.order_by.is_empty() {
+        parts.push(format!("ORDER BY {}", evidence.order_by.join(", ")));
+    }
+    if parts.is_empty() {
+        "none".to_string()
+    } else {
+        parts.join("; ")
+    }
+}
+
+fn format_notes(notes: &[String]) -> String {
+    if notes.is_empty() {
+        "none".to_string()
+    } else {
+        notes.join("; ")
+    }
+}
+
+fn format_optional_pct(value: Option<f64>) -> String {
+    value
+        .map(|ratio| format!("{:.1}%", ratio * 100.0))
+        .unwrap_or_else(|| "n/a".to_string())
+}
+
+fn format_optional_f64(value: Option<f64>, unit: &str) -> String {
+    value
+        .map(|value| format!("{value:.1}{unit}"))
+        .unwrap_or_else(|| "n/a".to_string())
+}
+
+fn format_optional_i64_per_call(value: Option<f64>, unit: &str) -> String {
+    value
+        .map(|value| format!("{value:.1}{unit}"))
+        .unwrap_or_else(|| "n/a".to_string())
+}
+
 fn format_slow_query_kind(kind: SlowQueryKind) -> &'static str {
     match kind {
         SlowQueryKind::TotalTime => "Slow Queries by Total Time",
@@ -927,16 +1196,16 @@ fn format_slow_query_kind(kind: SlowQueryKind) -> &'static str {
 fn describe_slow_query_kind(kind: SlowQueryKind) -> &'static str {
     match kind {
         SlowQueryKind::TotalTime => {
-            "Shows which statements consume the most cumulative execution time across all calls, useful for finding the biggest overall throughput drains."
+            "Shows which statements consume the most cumulative execution time since pg_stat_statements was last reset; this is not a time-windowed ranking."
         }
         SlowQueryKind::MeanTime => {
-            "Shows which statements are slow per execution, useful for reducing end-user latency and fixing expensive query plans."
+            "Shows which statements are slow per execution within the cumulative pg_stat_statements dataset, useful for reducing end-user latency and fixing expensive query plans."
         }
         SlowQueryKind::SharedBlksRead => {
-            "Highlights statements that perform the most disk-backed reads into shared buffers, useful for spotting I/O-heavy access patterns and missing indexes."
+            "Highlights statements that perform the most disk-backed reads in the cumulative pg_stat_statements dataset, useful for spotting I/O-heavy access patterns and missing indexes."
         }
         SlowQueryKind::TempBlksWritten => {
-            "Highlights statements that spill the most temporary blocks, useful for identifying costly sort/hash operations and memory pressure."
+            "Highlights statements that spill the most temporary blocks in the cumulative pg_stat_statements dataset, useful for identifying costly sort/hash operations and memory pressure."
         }
     }
 }
@@ -957,5 +1226,158 @@ fn selectivity_ratio(index: &crate::models::IndexUsageInfo) -> f64 {
         0.0
     } else {
         index.avg_tuples_per_scan / table_rows
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::{
+        QueryIndexCandidate, QueryIndexEvidence, SlowQueryGroup, SlowQueryInfo,
+        WorkloadCoverageStats, WorkloadFindingConfidence, WorkloadMetadata,
+    };
+
+    fn sample_workload_results() -> WorkloadResults {
+        WorkloadResults {
+            workload_metadata: WorkloadMetadata {
+                stats_reset_at: Some("2026-03-05 10:00:00+00".into()),
+                entry_deallocations: Some(7),
+                server_version: Some(160004),
+                query_text_visible: false,
+                parsed_queries: 7,
+                parse_failures: 3,
+                suppressed_candidates: 2,
+                ..WorkloadMetadata::default()
+            },
+            coverage_stats: WorkloadCoverageStats {
+                suppressed_by_existing_index: 2,
+                skipped_internal_tables: 1,
+                skipped_unresolved_schema: 1,
+                skipped_unsupported_parse_shape: 2,
+                parser_errors: 3,
+            },
+            slow_query_groups: vec![SlowQueryGroup {
+                kind: SlowQueryKind::TotalTime,
+                queries: vec![SlowQueryInfo {
+                    queryid: 42,
+                    calls: 10,
+                    total_time_ms: 500.0,
+                    mean_time_ms: 50.0,
+                    max_time_ms: 100.0,
+                    rows: 25,
+                    shared_blks_read: 10,
+                    shared_blks_hit: 90,
+                    temp_blks_read: 0,
+                    temp_blks_written: 20,
+                    total_time_pct: 62.5,
+                    cache_hit_ratio: Some(0.9),
+                    temp_blks_written_per_call: Some(2.0),
+                    wal_bytes: Some(2_048),
+                    wal_bytes_per_call: Some(204.8),
+                    query_text: "select * from orders where customer_id = $1".into(),
+                }],
+            }],
+            query_index_candidates: vec![QueryIndexCandidate {
+                schema: "public".into(),
+                table: "orders".into(),
+                columns: vec!["customer_id".into(), "created_at".into()],
+                reason: "heuristic from slow query: WHERE customer_id; ORDER BY created_at".into(),
+                confidence: WorkloadFindingConfidence::Low,
+                evidence: QueryIndexEvidence {
+                    equality_filters: vec!["customer_id".into()],
+                    non_equality_filters: Vec::new(),
+                    equality_joins: Vec::new(),
+                    order_by: vec!["created_at".into()],
+                },
+                notes: vec![
+                    "table name resolved to public, but another schema may contain the same table"
+                        .into(),
+                    "table is also a sequential scan hotspot".into(),
+                ],
+                queryid: 42,
+                total_time_ms: 500.0,
+                mean_time_ms: 50.0,
+                calls: 10,
+            }],
+            warnings: vec![
+                "Workload results are cumulative only since pg_stat_statements was last reset at 2026-03-05 10:00:00+00.".into(),
+                "pg_stat_statements has evicted 7 entries due to capacity pressure; low-frequency statements and derived findings may be incomplete.".into(),
+                "Query text visibility appears limited for the current role; grant pg_read_all_stats to avoid incomplete or anonymized workload findings.".into(),
+                "Only 7 of 10 workload statements were parsed into index evidence; index candidate coverage is partial.".into(),
+            ],
+            ..WorkloadResults::default()
+        }
+    }
+
+    #[test]
+    fn workload_markdown_snapshot_includes_metadata_and_candidate_notes() {
+        let reporter = WorkloadReporter::new(ReportFormat::Markdown);
+        let results = sample_workload_results();
+        let mut output = Vec::new();
+
+        reporter
+            .write_workload_markdown(&mut output, &results)
+            .expect("markdown workload report should render");
+
+        let rendered = String::from_utf8(output).expect("markdown should be utf8");
+        assert!(rendered.contains("# PostgreSQL Workload Analysis Report"));
+        assert!(rendered.contains("- **Data source**: `pg_stat_statements`"));
+        assert!(rendered.contains("- **Entry deallocations**: 7"));
+        assert!(rendered.contains("- **Query text visible**: no"));
+        assert!(
+            rendered.contains("Only 7 of 10 workload statements were parsed into index evidence")
+        );
+        assert!(rendered.contains("| public.orders | customer_id, created_at | low |"));
+        assert!(rendered.contains("table is also a sequential scan hotspot"));
+    }
+
+    #[test]
+    fn workload_markdown_reports_none_when_warnings_absent() {
+        let reporter = WorkloadReporter::new(ReportFormat::Markdown);
+        let mut results = WorkloadResults::default();
+        results.workload_metadata.parsed_queries = 1;
+        let mut output = Vec::new();
+
+        reporter
+            .write_workload_markdown(&mut output, &results)
+            .expect("markdown workload report should render");
+
+        let rendered = String::from_utf8(output).expect("markdown should be utf8");
+        assert!(rendered.contains("- **Warnings**: None"));
+    }
+
+    #[test]
+    fn workload_text_snapshot_includes_wal_and_coverage_summary() {
+        let reporter = WorkloadReporter::new(ReportFormat::Text);
+        let results = sample_workload_results();
+        let mut output = Vec::new();
+
+        reporter
+            .write_workload_text(&mut output, &results)
+            .expect("text workload report should render");
+
+        let rendered = String::from_utf8(output).expect("text should be utf8");
+        assert!(rendered.contains("Coverage summary: 2 suppressed, 1 internal, 1 unresolved-schema, 2 unsupported shapes, 3 parser errors"));
+        assert!(rendered.contains("WAL/call: 204.8 bytes"));
+        assert!(rendered.contains("evidence: WHERE = customer_id; ORDER BY created_at"));
+    }
+
+    #[test]
+    fn workload_json_snapshot_includes_metadata_and_evidence_fields() {
+        let reporter = WorkloadReporter::new(ReportFormat::Json);
+        let results = sample_workload_results();
+        let mut output = Vec::new();
+
+        reporter
+            .write_workload_json(&mut output, &results)
+            .expect("json workload report should render");
+
+        let rendered = String::from_utf8(output).expect("json should be utf8");
+        assert!(rendered.contains("\"workload_metadata\""));
+        assert!(rendered.contains("\"scope\": \"cumulative_since_reset\""));
+        assert!(rendered.contains("\"query_text_visible\": false"));
+        assert!(rendered.contains("\"confidence\": \"low\""));
+        assert!(rendered.contains("\"equality_filters\": ["));
+        assert!(rendered.contains("\"notes\": ["));
     }
 }

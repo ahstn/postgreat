@@ -109,6 +109,7 @@ pub struct IndexUsageInfo {
     pub schema: String,
     pub table_name: String,
     pub index_name: String,
+    pub key_columns: Vec<String>,
     pub index_size_bytes: i64,
     pub index_size_pretty: String,
     pub scans: i64,
@@ -224,7 +225,38 @@ pub struct SlowQueryInfo {
     pub shared_blks_hit: i64,
     pub temp_blks_read: i64,
     pub temp_blks_written: i64,
+    pub total_time_pct: f64,
+    pub cache_hit_ratio: Option<f64>,
+    pub temp_blks_written_per_call: Option<f64>,
+    pub wal_bytes: Option<i64>,
+    pub wal_bytes_per_call: Option<f64>,
     pub query_text: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkloadFindingConfidence {
+    High,
+    Medium,
+    Low,
+}
+
+impl WorkloadFindingConfidence {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            WorkloadFindingConfidence::High => "high",
+            WorkloadFindingConfidence::Medium => "medium",
+            WorkloadFindingConfidence::Low => "low",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct QueryIndexEvidence {
+    pub equality_filters: Vec<String>,
+    pub non_equality_filters: Vec<String>,
+    pub equality_joins: Vec<String>,
+    pub order_by: Vec<String>,
 }
 
 /// Represents a heuristic index candidate derived from slow queries.
@@ -234,15 +266,58 @@ pub struct QueryIndexCandidate {
     pub table: String,
     pub columns: Vec<String>,
     pub reason: String,
+    pub confidence: WorkloadFindingConfidence,
+    pub evidence: QueryIndexEvidence,
+    pub notes: Vec<String>,
     pub queryid: i64,
     pub total_time_ms: f64,
     pub mean_time_ms: f64,
     pub calls: i64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkloadMetadata {
+    pub data_source: String,
+    pub scope: String,
+    pub stats_reset_at: Option<String>,
+    pub entry_deallocations: Option<i64>,
+    pub server_version: Option<i64>,
+    pub query_text_visible: bool,
+    pub parsed_queries: usize,
+    pub parse_failures: usize,
+    pub suppressed_candidates: usize,
+}
+
+impl Default for WorkloadMetadata {
+    fn default() -> Self {
+        Self {
+            data_source: "pg_stat_statements".into(),
+            scope: "cumulative_since_reset".into(),
+            stats_reset_at: None,
+            entry_deallocations: None,
+            server_version: None,
+            query_text_visible: true,
+            parsed_queries: 0,
+            parse_failures: 0,
+            suppressed_candidates: 0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct WorkloadCoverageStats {
+    pub suppressed_by_existing_index: usize,
+    pub skipped_internal_tables: usize,
+    pub skipped_unresolved_schema: usize,
+    pub skipped_unsupported_parse_shape: usize,
+    pub parser_errors: usize,
+}
+
 /// Workload analysis results for slow query and index candidate reporting.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct WorkloadResults {
+    pub workload_metadata: WorkloadMetadata,
+    pub coverage_stats: WorkloadCoverageStats,
     pub slow_query_groups: Vec<SlowQueryGroup>,
     pub query_index_candidates: Vec<QueryIndexCandidate>,
     pub index_usage_info: Vec<IndexUsageInfo>,

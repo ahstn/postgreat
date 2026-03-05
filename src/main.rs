@@ -74,7 +74,7 @@ enum Commands {
         #[arg(short = 'c', long = "config")]
         config_path: String,
     },
-    /// Analyze workload performance using pg_stat_statements
+    /// Analyze workload performance using pg_stat_statements (must be installed and usable)
     Workload {
         /// Database host
         #[arg(
