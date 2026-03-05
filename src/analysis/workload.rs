@@ -373,6 +373,9 @@ fn build_candidates_for_usage(
     for (table_name, usage) in &usage.usage_by_table {
         let table_ref = table_map.get(table_name);
         let Some(table_ref) = table_ref else { continue };
+        if is_internal_postgres_table(table_ref) {
+            continue;
+        }
 
         let mut columns = Vec::new();
         append_unique(&mut columns, &usage.filters);
@@ -407,6 +410,22 @@ fn build_candidates_for_usage(
     }
 
     candidates
+}
+
+fn is_internal_postgres_table(table: &TableRef) -> bool {
+    if let Some(schema) = &table.schema {
+        return is_internal_postgres_schema(schema);
+    }
+
+    table.name.to_ascii_lowercase().starts_with("pg_")
+}
+
+fn is_internal_postgres_schema(schema: &str) -> bool {
+    let schema = schema.to_ascii_lowercase();
+    schema == "pg_catalog"
+        || schema == "information_schema"
+        || schema.starts_with("pg_toast")
+        || schema.starts_with("pg_temp_")
 }
 
 fn append_unique(target: &mut Vec<String>, source: &[String]) {
@@ -734,5 +753,70 @@ mod tests {
                     .iter()
                     .any(|column| column == "customer_id")
         }));
+    }
+
+    #[test]
+    fn candidate_skips_internal_postgres_tables() {
+        let mut usage = QueryColumnUsage::default();
+        usage.tables.push(TableRef {
+            schema: None,
+            name: "pg_stat_database".into(),
+        });
+        let mut table_usage = TableColumnUsage::default();
+        table_usage.filters = vec!["datid".into()];
+        usage
+            .usage_by_table
+            .insert("pg_stat_database".into(), table_usage);
+
+        let catalog = IndexCatalog::default();
+        let stat = StatementStat {
+            queryid: 1,
+            query: "SELECT * FROM pg_stat_database WHERE datid = 1".into(),
+            calls: 10,
+            total_time_ms: 1000.0,
+            mean_time_ms: 100.0,
+            max_time_ms: 200.0,
+            rows: 0,
+            shared_blks_read: 0,
+            shared_blks_hit: 0,
+            temp_blks_read: 0,
+            temp_blks_written: 0,
+        };
+
+        let candidates = build_candidates_for_usage(&stat, &usage, &catalog);
+        assert!(candidates.is_empty());
+    }
+
+    #[test]
+    fn candidate_keeps_explicit_non_internal_schema_tables() {
+        let mut usage = QueryColumnUsage::default();
+        usage.tables.push(TableRef {
+            schema: Some("public".into()),
+            name: "pg_custom_events".into(),
+        });
+        let mut table_usage = TableColumnUsage::default();
+        table_usage.filters = vec!["account_id".into()];
+        usage
+            .usage_by_table
+            .insert("public.pg_custom_events".into(), table_usage);
+
+        let catalog = IndexCatalog::default();
+        let stat = StatementStat {
+            queryid: 1,
+            query: "SELECT * FROM public.pg_custom_events WHERE account_id = 42".into(),
+            calls: 10,
+            total_time_ms: 1000.0,
+            mean_time_ms: 100.0,
+            max_time_ms: 200.0,
+            rows: 0,
+            shared_blks_read: 0,
+            shared_blks_hit: 0,
+            temp_blks_read: 0,
+            temp_blks_written: 0,
+        };
+
+        let candidates = build_candidates_for_usage(&stat, &usage, &catalog);
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].table, "pg_custom_events");
     }
 }
