@@ -1,6 +1,23 @@
 min_version = '2025.9.14'
 
 [tools]
+cocogitto = "latest"
+git-cliff = "latest"
 "github:moby/buildkit" = "latest"
 prek = "latest"
 rust = "latest"
+
+
+[tasks]
+[tasks.release]
+description = "Analyze commits and dispatch the release workflow when a release is pending"
+# Requires GITHUB_TOKEN to be set in the environment
+run = ["cog bump --auto --skip-untracked", "git-cliff -o CHANGELOG.md"]
+
+
+[tasks.release-dry-run]
+description = "Validate semantic-release configuration in dry-run mode"
+run = [
+    "cog bump --auto --dry-run --skip-untracked",
+    "git-cliff --dry-run --offline",
+]
