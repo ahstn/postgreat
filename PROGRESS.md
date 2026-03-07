@@ -6,6 +6,13 @@ PostGreat is a Rust-based PostgreSQL configuration analyzer that provides eviden
 
 ## Work Log
 
+### 2026-03-07 - Env-backed config and dotenv support
+- Added startup dotenv loading so `analyze`, `workload`, and other env-backed CLI flags can read `POSTGRES_*` from a `.env` file before clap validates arguments.
+- Added quoted `"{env:VAR_NAME}"` placeholders for YAML config files, with typed resolution for strings, numeric fields, and enum fields plus clear errors for missing or invalid env values.
+- Switched runtime PostgreSQL connections from hand-built URLs to `sqlx::postgres::PgConnectOptions`, fixing passwords that contain URL-reserved characters.
+- Added regression coverage for YAML env resolution, dotenv precedence, pre-clap `.env` loading, and reserved-character passwords in the live analyze harness.
+- Updated README and `.gitignore` so the secure path for credentials is `.env` or pre-set environment variables instead of inline passwords.
+
 ### 2026-03-05 - Live PostgreSQL integration test harness
 - Added a Docker-backed integration test layer using `testcontainers`, with PostgreSQL 14 and 18 as the supported live-test matrix.
 - Reused the existing SQL fixtures under `tests/_data/` and added workload-specific setup for `pg_stat_statements`, seeded roles, live workload generation, and deallocation scenarios.
@@ -285,8 +292,9 @@ Implemented six analysis modules based on documentation:
 ## Security Considerations
 
 ### Current Implementation
-- Passwords via CLI args (visible in process list)
-- Environment variables recommended
+- Passwords can still be passed via CLI args (visible in process list)
+- Environment variables and `.env` are supported for `POSTGRES_*`
+- YAML config files can reference env vars via quoted `"{env:VAR_NAME}"` placeholders
 - No password masking in output
 
 ### Recommendations

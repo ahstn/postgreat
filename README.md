@@ -8,6 +8,7 @@ A modern Rust-based tool for analyzing PostgreSQL configuration and providing ev
 - **Compute-Specific Tuning**: Accepts compute specifications (vCPU/RAM) for tailored recommendations
 - **Multiple Output Formats**: Markdown, JSON, and plain text reports
 - **Batch Analysis**: Analyze multiple databases from a YAML configuration file
+- **Credential-Safe Inputs**: Load `POSTGRES_*` from environment variables or `.env`, and reference secrets from YAML via quoted `"{env:VAR_NAME}"` placeholders
 - **Comprehensive Coverage**: Memory, concurrency, WAL, planner, autovacuum, and logging
 
 ## Installation
@@ -33,28 +34,44 @@ The binary will be available at `target/release/postgreat`.
 
 > [!NOTE]
 >
-> See [PostgreSQL Permissions](#postgresql-permission) for a secure, specific user
+> See [PostgreSQL Permissions](#postgresql-permissions) for a secure, specific user.
+> For secrets, prefer a `.env` file or pre-set environment variables so passwords do not end up in shell history or committed config files.
+
+Recommended: store connection settings in a `.env` file in your working directory (or any parent directory). PostGreat loads it before parsing CLI flags, and real environment variables still win if both are set.
 
 ```bash
-postgreat analyze \
-  -h localhost \
-  -p 5432 \
-  -d mydatabase \
-  -u postgres \
-  -P password \
-  --compute "8vCPU-64GB"
+# .env
+POSTGRES_HOST=localhost
+POSTGRES_PORT=5432
+POSTGRES_DATABASE=mydatabase
+POSTGRES_USER=postgres
+POSTGRES_PASSWORD=correct-horse-battery-staple
+
+postgreat analyze --compute "8vCPU-64GB"
 ```
 
-Or using environment variables:
+If you already manage secrets outside the shell, exported environment variables work the same way:
 
 ```bash
 export POSTGRES_HOST=localhost
 export POSTGRES_PORT=5432
 export POSTGRES_DATABASE=mydatabase
 export POSTGRES_USER=postgres
-export POSTGRES_PASSWORD=password
+export POSTGRES_PASSWORD="$(op read 'op://Engineering/Postgres/password')"
 
 postgreat analyze --compute "8vCPU-64GB"
+```
+
+You can still pass flags directly when needed, but avoid typing raw passwords inline:
+
+```bash
+postgreat analyze \
+  -H localhost \
+  --port 5432 \
+  -d mydatabase \
+  -u postgres \
+  --password "$POSTGRES_PASSWORD" \
+  --compute "8vCPU-64GB"
 ```
 
 ### Analyze Workload (Slow Queries & Index Candidates)
@@ -72,11 +89,11 @@ an index candidate was emitted or suppressed.
 
 ```bash
 postgreat workload \
-  -h localhost \
-  -p 5432 \
+  -H localhost \
+  --port 5432 \
   -d mydatabase \
   -u postgres \
-  -P password \
+  --password "$POSTGRES_PASSWORD" \
   --limit 20 \
   --min-calls 10
 ```
@@ -94,15 +111,15 @@ PostGreat cannot always read host hardware (e.g., AWS RDS instances), so hardwar
 
 ### Analyze Multiple Databases
 
-Create a YAML configuration file:
+Create a YAML configuration file. Quoted `"{env:VAR_NAME}"` placeholders are supported for scalar fields such as `password`, `port`, `storage_type`, `workload_type`, and `compute.vcpu` / `compute.memory_gb`.
 
 ```yaml
-# db-config.yaml
+# configs/db-config.yaml
 - host: db1.example.com
   port: 5432
   database: production_db
   username: postgres
-  password: secret
+  password: "{env:PRIMARY_POSTGRES_PASSWORD}"
   compute:
     vcpu: 8
     memory_gb: 64
@@ -111,17 +128,29 @@ Create a YAML configuration file:
   port: 5432
   database: analytics_db
   username: postgres
-  password: secret
+  password: "{env:ANALYTICS_POSTGRES_PASSWORD}"
   compute:
     vcpu: 32
     memory_gb: 256
 ```
 
+Put the secrets in a `.env` file next to the YAML file so they are not hardcoded in source-controlled config:
+
+```bash
+# configs/.env
+PRIMARY_POSTGRES_PASSWORD=primary-db-password
+ANALYTICS_POSTGRES_PASSWORD=analytics-db-password
+```
+
+The placeholder must be quoted and must be the entire scalar value. Embedded interpolation such as `"postgres://user:{env:PASS}@host/db"` is not supported.
+
 Then run:
 
 ```bash
-postgreat config -c db-config.yaml
+postgreat config -c configs/db-config.yaml
 ```
+
+Keep `.env` files out of version control. This repository ignores `.env` by default, and the same practice is recommended for application repositories that store PostGreat config files.
 
 ### Output Formats
 
