@@ -168,16 +168,31 @@ impl ConfigChecker {
             Err(err) => warn!("Failed to read pg_stat_activity for connection count: {err}"),
         }
 
-        // Fetch checkpoint stats for WAL analysis
-        match sqlx::query("SELECT checkpoints_timed, checkpoints_req FROM pg_stat_bgwriter")
-            .fetch_one(&self.pool)
-            .await
+        // PostgreSQL 17+ exposes checkpoint counters in pg_stat_checkpointer.
+        match sqlx::query(
+            "SELECT num_timed AS checkpoints_timed, num_requested AS checkpoints_req FROM pg_stat_checkpointer",
+        )
+        .fetch_one(&self.pool)
+        .await
         {
             Ok(row) => {
                 stats.checkpoints_timed = row.try_get("checkpoints_timed").ok();
                 stats.checkpoints_req = row.try_get("checkpoints_req").ok();
             }
-            Err(err) => warn!("Failed to read pg_stat_bgwriter: {err}"),
+            Err(new_err) => match sqlx::query(
+                "SELECT checkpoints_timed, checkpoints_req FROM pg_stat_bgwriter",
+            )
+            .fetch_one(&self.pool)
+            .await
+            {
+                Ok(row) => {
+                    stats.checkpoints_timed = row.try_get("checkpoints_timed").ok();
+                    stats.checkpoints_req = row.try_get("checkpoints_req").ok();
+                }
+                Err(old_err) => warn!(
+                    "Failed to read checkpoint stats from pg_stat_checkpointer ({new_err}) or pg_stat_bgwriter ({old_err})"
+                ),
+            },
         }
 
         // Use provided compute spec if available

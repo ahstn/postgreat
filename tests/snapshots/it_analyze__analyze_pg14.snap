@@ -1,0 +1,9 @@
+---
+source: tests/it_analyze.rs
+expression: analyze_snapshot_view(&json)
+---
+{
+  "has_failed_index_only_finding": true,
+  "has_rental_bloat": true,
+  "has_rental_seq_scan": true
+}

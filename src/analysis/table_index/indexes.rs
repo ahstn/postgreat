@@ -104,7 +104,7 @@ async fn fetch_soft_delete_candidates(
         tables_with_partial_idx AS (
             SELECT DISTINCT indrelid
             FROM pg_index
-            WHERE indispartial = true
+            WHERE indpred IS NOT NULL
         )
         SELECT
             s.nspname,

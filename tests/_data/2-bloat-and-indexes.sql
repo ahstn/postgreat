@@ -16,11 +16,6 @@ BEGIN
         UPDATE rental
         SET last_update = NOW()
         WHERE rental_id % 10 = 0;
-
-        -- Delete some rows to create dead tuples that won't be re-used immediately
-        IF i % 10 = 0 THEN
-             DELETE FROM rental WHERE rental_id % 100 = 1;
-        END IF;
     END LOOP;
 END $$;
 

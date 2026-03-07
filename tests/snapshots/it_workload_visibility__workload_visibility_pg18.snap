@@ -1,0 +1,23 @@
+---
+source: tests/it_workload_visibility.rs
+expression: workload_visibility_snapshot_view(&json)
+---
+{
+  "metadata": {
+    "data_source": "pg_stat_statements",
+    "entry_deallocations_state": "zero",
+    "query_text_visible": false,
+    "scope": "cumulative_since_reset",
+    "stats_reset_state": "available"
+  },
+  "slow_query_kinds": [
+    "mean_time",
+    "shared_blks_read",
+    "temp_blks_written",
+    "total_time"
+  ],
+  "warning_categories": [
+    "limited_visibility",
+    "recent_reset"
+  ]
+}

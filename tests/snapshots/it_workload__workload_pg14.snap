@@ -1,0 +1,25 @@
+---
+source: tests/it_workload.rs
+expression: workload_happy_path_snapshot_view(&json)
+---
+{
+  "has_non_equality_candidate": true,
+  "has_rental_candidate": true,
+  "has_table_health_note": true,
+  "metadata": {
+    "data_source": "pg_stat_statements",
+    "entry_deallocations_state": "zero",
+    "query_text_visible": true,
+    "scope": "cumulative_since_reset",
+    "stats_reset_state": "available"
+  },
+  "slow_query_kinds": [
+    "mean_time",
+    "shared_blks_read",
+    "temp_blks_written",
+    "total_time"
+  ],
+  "warning_categories": [
+    "recent_reset"
+  ]
+}

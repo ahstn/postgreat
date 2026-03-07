@@ -416,7 +416,7 @@ async fn fetch_pg_stat_statements_info(
     let query = r#"
         SELECT
             stats_reset::text AS stats_reset_at,
-            EXTRACT(EPOCH FROM now() - stats_reset) AS seconds_since_reset,
+            EXTRACT(EPOCH FROM now() - stats_reset)::double precision AS seconds_since_reset,
             dealloc::bigint AS entry_deallocations
         FROM pg_stat_statements_info
     "#;
@@ -707,6 +707,7 @@ fn pg_stat_statements_unavailable_warning(source: &Error) -> Option<String> {
 
 fn is_pg_stat_statements_preload_error_message(message: &str) -> bool {
     message.contains("pg_stat_statements must be loaded via shared_preload_libraries")
+        || message.contains("pg_stat_statements must be loaded via \"shared_preload_libraries\"")
 }
 
 #[derive(Debug, Default)]
