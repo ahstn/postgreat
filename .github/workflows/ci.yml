@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - fix/**
+      - codex/**
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --check
+
+      - name: Lint
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Unit Tests
+        run: cargo test
+
+  live-postgres:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        postgres_version: ["14", "18"]
+    env:
+      POSTGREAT_TEST_PG_VERSION: ${{ matrix.postgres_version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Live Analyze Test
+        run: cargo test --test it_analyze -- --ignored --test-threads=1
+
+      - name: Live Workload Test
+        run: cargo test --test it_workload -- --ignored --test-threads=1
+
+      - name: Live Workload Unavailable Test
+        run: cargo test --test it_workload_unavailable -- --ignored --test-threads=1
+
+      - name: Live Workload Visibility Test
+        run: cargo test --test it_workload_visibility -- --ignored --test-threads=1
+
+      - name: Live Workload Deallocation Test
+        run: cargo test --test it_workload_dealloc -- --ignored --test-threads=1

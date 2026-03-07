@@ -1,0 +1,12 @@
+---
+source: tests/it_workload_unavailable.rs
+expression: workload_unavailable_snapshot_view(&no_extension_json)
+---
+{
+  "candidate_count": 0,
+  "slow_query_group_count": 0,
+  "stats_reset_state": "unavailable",
+  "warning_categories": [
+    "extension_missing"
+  ]
+}

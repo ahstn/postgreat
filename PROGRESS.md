@@ -6,6 +6,12 @@ PostGreat is a Rust-based PostgreSQL configuration analyzer that provides eviden
 
 ## Work Log
 
+### 2026-03-05 - Live PostgreSQL integration test harness
+- Added a Docker-backed integration test layer using `testcontainers`, with PostgreSQL 14 and 18 as the supported live-test matrix.
+- Reused the existing SQL fixtures under `tests/_data/` and added workload-specific setup for `pg_stat_statements`, seeded roles, live workload generation, and deallocation scenarios.
+- Added ignored end-to-end tests that invoke the `postgreat` binary directly, assert JSON output, and snapshot stable scenario summaries for analyze, workload, limited visibility, unavailable `pg_stat_statements`, and statement eviction cases.
+- Added a GitHub Actions workflow that runs the fast Rust checks plus the live PostgreSQL matrix, and documented the local commands in `README.md`.
+
 ### 2026-03-05 - Workload reporting hardening
 - Added workload metadata and coverage accounting so the `workload` report explains its scope (`pg_stat_statements` since reset), entry deallocations, query-text visibility, parse coverage, and candidate suppression counts.
 - Enriched slow-query output with cumulative-share, cache-hit, temp-spill, and optional WAL-per-call context, while keeping the existing CLI interface stable.

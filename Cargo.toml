@@ -30,6 +30,11 @@ sqlparser = "0.45"
 
 [dev-dependencies]
 rstest = "0.23"
+assert_cmd = "2.0"
+insta = { version = "1.42", features = ["json"] }
+predicates = "3.1"
+testcontainers = { version = "0.23", features = ["blocking"] }
+testcontainers-modules = { version = "0.12", features = ["blocking", "postgres"] }
 
 [[bin]]
 name = "postgreat"

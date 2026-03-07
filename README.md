@@ -268,9 +268,39 @@ src/
 
 ### Running Tests
 
+Fast test suite:
+
 ```bash
 cargo test
 ```
+
+Live PostgreSQL integration tests:
+- Require Docker and are ignored by default.
+- Start a real PostgreSQL instance with `testcontainers`, seed it from `tests/_data/`, and invoke the `postgreat` binary end-to-end.
+- Cover five scenarios:
+  - `it_analyze`: seeded `analyze --format json` run with table/index-health findings
+  - `it_workload`: happy-path `workload --format json` run with `pg_stat_statements`
+  - `it_workload_unavailable`: extension missing and installed-but-not-preloaded behavior
+  - `it_workload_visibility`: reduced query-text visibility without `pg_read_all_stats`
+  - `it_workload_dealloc`: `pg_stat_statements` entry eviction/deallocation warnings
+
+Run a single live test against PostgreSQL 18:
+
+```bash
+POSTGREAT_TEST_PG_VERSION=18 cargo test --test it_workload -- --ignored --test-threads=1
+```
+
+Run the full live suite against PostgreSQL 18:
+
+```bash
+POSTGREAT_TEST_PG_VERSION=18 cargo test --test it_analyze -- --ignored --test-threads=1
+POSTGREAT_TEST_PG_VERSION=18 cargo test --test it_workload -- --ignored --test-threads=1
+POSTGREAT_TEST_PG_VERSION=18 cargo test --test it_workload_unavailable -- --ignored --test-threads=1
+POSTGREAT_TEST_PG_VERSION=18 cargo test --test it_workload_visibility -- --ignored --test-threads=1
+POSTGREAT_TEST_PG_VERSION=18 cargo test --test it_workload_dealloc -- --ignored --test-threads=1
+```
+
+Swap `POSTGREAT_TEST_PG_VERSION=14` to run the same suite against PostgreSQL 14.
 
 ### Code Formatting and Linting
 
