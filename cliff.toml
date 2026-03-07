@@ -1,6 +1,6 @@
 [remote.github]
 owner = "ahstn"
-repo = "oceans-llm"
+repo = "postgreat"
 
 [changelog]
 header = """
@@ -23,7 +23,7 @@ body = """
 {% endif -%}
 
 {% for group, commits in commits | group_by(attribute="group") -%}
-### {{ group | upper_first }}
+### {{ group | striptags | trim | upper_first }}
 {% for commit in commits -%}
 - {% if commit.scope %}*({{ commit.scope }})* {% endif %}{% if commit.breaking %}[**breaking**] {% endif %}{{ commit.message | split(pat="\n") | first | upper_first | trim }}{% if commit.remote.username %} by @{{ commit.remote.username }}{% endif %}{% if commit.remote.pr_number %} in [#{{ commit.remote.pr_number }}]({{ self::remote_url() }}/pull/{{ commit.remote.pr_number }}){% endif %}
 {% endfor %}
@@ -61,19 +61,19 @@ filter_unconventional = false
 split_commits = false
 commit_preprocessors = [{ pattern = '\((\w+\s)?#([0-9]+)\)', replace = "" }]
 commit_parsers = [
-    { message = '^docs\(release\): update changelog for v', skip = true },
-    { message = "^feat", group = "Added" },
-    { message = "^fix", group = "Fixed" },
-    { message = "^perf", group = "Changed" },
-    { message = "^refactor", group = "Changed" },
-    { message = "^revert", group = "Changed" },
-    { message = "^docs", group = "Documentation" },
-    { message = "^test", group = "Testing" },
-    { message = "^build", group = "Build" },
-    { message = "^ci", group = "CI" },
-    { message = "^style", group = "Styling" },
-    { message = "^chore", group = "Miscellaneous" },
-    { message = "^.*", group = "Changed" },
+  { message = '^docs\(release\): update changelog for v', skip = true },
+  { message = "^feat", group = "<!-- 0 -->:rocket: New features" },
+  { message = "^fix", group = "<!-- 1 -->:bug: Bug fixes" },
+  { message = "^perf", group = "Changed" },
+  { message = "^refactor", group = "Changed" },
+  { message = "^revert", group = "Changed" },
+  { message = "^docs", group = "Documentation" },
+  { message = "^test", group = "Testing" },
+  { message = "^build", group = "Build" },
+  { message = "^ci", group = "CI" },
+  { message = "^style", group = "Styling" },
+  { message = "^chore", group = "Miscellaneous" },
+  { message = "^.*", group = "Changed" },
 ]
 protect_breaking_commits = true
 filter_commits = false
@@ -81,3 +81,4 @@ fail_on_unmatched_commit = false
 tag_pattern = "v[0-9].*"
 topo_order = false
 sort_commits = "oldest"
+exclude_paths = ["CHANGELOG.md", "README.md"]
