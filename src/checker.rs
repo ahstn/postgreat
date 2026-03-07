@@ -89,7 +89,11 @@ impl ConfigChecker {
     }
 
     pub async fn analyze_workload(&mut self, opts: WorkloadOptions) -> Result<WorkloadResults> {
-        let mut results = workload::analyze(&self.pool, &opts).await?;
+        let analysis = workload::analyze(&self.pool, &opts).await?;
+        let mut results = analysis.results;
+        if !analysis.available {
+            return Ok(results);
+        }
 
         info!("Running table and index health analysis...");
         let mut table_results = AnalysisResults::default();
@@ -101,6 +105,7 @@ impl ConfigChecker {
             results.bloat_info = table_results.bloat_info;
             results.seq_scan_info = table_results.seq_scan_info;
             results.index_usage_info = table_results.index_usage_info;
+            workload::correlate_table_health(&mut results);
         }
 
         Ok(results)

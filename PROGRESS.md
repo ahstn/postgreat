@@ -6,6 +6,12 @@ PostGreat is a Rust-based PostgreSQL configuration analyzer that provides eviden
 
 ## Work Log
 
+### 2026-03-05 - Workload reporting hardening
+- Added workload metadata and coverage accounting so the `workload` report explains its scope (`pg_stat_statements` since reset), entry deallocations, query-text visibility, parse coverage, and candidate suppression counts.
+- Enriched slow-query output with cumulative-share, cache-hit, temp-spill, and optional WAL-per-call context, while keeping the existing CLI interface stable.
+- Expanded heuristic index candidates with structured evidence, confidence, and notes for ambiguous schema resolution, ignored partial/expression/invalid/non-B-tree indexes, and correlated table/index-health findings.
+- Added reporter regression tests for Markdown/Text/JSON workload output and documented the workload-analysis review checklist in `README.md`.
+
 ### 2026-02-03 - Workload analysis command
 - Added `workload` subcommand to analyze slow queries using `pg_stat_statements`, including heuristic index candidates derived from SQL parsing.
 - Implemented SQL parsing (WHERE/JOIN/ORDER BY) via `sqlparser` and reported parse failures and warnings.

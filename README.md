@@ -59,7 +59,16 @@ postgreat analyze --compute "8vCPU-64GB"
 
 ### Analyze Workload (Slow Queries & Index Candidates)
 
-Requires `pg_stat_statements` to be installed and enabled on the target database.
+Requires `pg_stat_statements` to be installed and usable on the target database. If the extension
+exists but PostgreSQL was not restarted with `shared_preload_libraries = 'pg_stat_statements'`,
+PostGreat will return a warning-only workload result instead of failing the command.
+The current workload report uses cumulative `pg_stat_statements` counters, so it does not support
+an exact historical lookback window like "last 1 hour". Results reflect activity since the
+statement's stats were first collected or `pg_stat_statements` was last reset; true time-windowed
+reporting requires external snapshots or a bucketed extension such as `pg_stat_monitor`.
+The report now includes workload metadata and coverage notes so you can see the effective scope
+(`pg_stat_statements` since reset), entry evictions, query-text visibility, parse coverage, and why
+an index candidate was emitted or suppressed.
 
 ```bash
 postgreat workload \
@@ -278,6 +287,13 @@ Contributions are welcome! Please ensure:
 2. Add tests for new analysis logic
 3. Update documentation as needed
 4. Follow Rust naming and style conventions
+5. For workload-analysis changes touching `pg_stat_statements`, SQL parsing, or index coverage:
+   - confirm cumulative vs real-time behavior explicitly
+   - document version-specific columns and fallback behavior
+   - check privilege-dependent visibility (`pg_read_all_stats`)
+   - verify index semantics for partial, expression, invalid, `INCLUDE`, and non-B-tree indexes
+   - cover ambiguous unqualified table names in tests
+6. For PostgreSQL-semantic changes, include at least one official PostgreSQL doc link in the PR description and one regression test for the behavior being changed
 
 ## License
 

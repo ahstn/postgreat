@@ -15,6 +15,7 @@ struct IndexStatRow {
     schema: String,
     table_name: String,
     index_name: String,
+    key_columns: Vec<String>,
     index_size_bytes: i64,
     index_size_pretty: String,
     idx_scan: i64,
@@ -142,6 +143,7 @@ fn identify_missing_partial_indexes(candidates: &[SoftDeleteCandidate]) -> Vec<I
             schema: c.schema.clone(),
             table_name: c.table_name.clone(),
             index_name: format!("(missing on {})", c.column_name),
+            key_columns: vec![c.column_name.clone()],
             index_size_bytes: 0,
             index_size_pretty: "0 B".to_string(),
             scans: 0,
@@ -212,6 +214,7 @@ fn identify_brin_candidates(candidates: &[BrinCandidate]) -> Vec<IndexUsageInfo>
             schema: c.schema.clone(),
             table_name: c.table_name.clone(),
             index_name: c.column_name.clone(), // Use column name as proxy
+            key_columns: vec![c.column_name.clone()],
             index_size_bytes: 0,
             index_size_pretty: "0 B".to_string(),
             scans: 0,
@@ -234,6 +237,10 @@ async fn fetch_index_stats(pool: &Pool<Postgres>) -> Result<Vec<IndexStatRow>, C
             s.schemaname,
             s.relname,
             s.indexrelname,
+            COALESCE(
+                array_agg(a.attname ORDER BY arr.ord) FILTER (WHERE a.attname IS NOT NULL),
+                ARRAY[]::text[]
+            ) AS key_columns,
             s.idx_scan,
             s.idx_tup_read,
             s.idx_tup_fetch,
@@ -241,14 +248,32 @@ async fn fetch_index_stats(pool: &Pool<Postgres>) -> Result<Vec<IndexStatRow>, C
             pg_size_pretty(pg_relation_size(s.indexrelid)) AS index_size_pretty,
             t.n_live_tup,
             i.indisunique,
-            i.indispartial,
+            (i.indpred IS NOT NULL) AS is_partial,
             (i.indexprs IS NOT NULL) AS is_expression,
             EXISTS (
                 SELECT 1 FROM pg_constraint c WHERE c.conindid = s.indexrelid
             ) AS enforces_constraint
         FROM pg_stat_user_indexes s
         JOIN pg_index i ON s.indexrelid = i.indexrelid
+        LEFT JOIN LATERAL unnest(i.indkey) WITH ORDINALITY AS arr(attnum, ord)
+            ON arr.ord <= i.indnkeyatts
+        LEFT JOIN pg_attribute a
+            ON a.attrelid = s.relid
+           AND a.attnum = arr.attnum
+           AND arr.attnum > 0
         LEFT JOIN pg_stat_user_tables t ON t.relid = s.relid
+        GROUP BY
+            s.schemaname,
+            s.relname,
+            s.indexrelname,
+            s.idx_scan,
+            s.idx_tup_read,
+            s.idx_tup_fetch,
+            s.indexrelid,
+            t.n_live_tup,
+            i.indisunique,
+            i.indpred,
+            i.indexprs
     "#;
 
     let rows =
@@ -266,6 +291,7 @@ async fn fetch_index_stats(pool: &Pool<Postgres>) -> Result<Vec<IndexStatRow>, C
             schema: row.get("schemaname"),
             table_name: row.get("relname"),
             index_name: row.get("indexrelname"),
+            key_columns: row.get("key_columns"),
             index_size_bytes: row.get("index_size_bytes"),
             index_size_pretty: row.get("index_size_pretty"),
             idx_scan: row.get("idx_scan"),
@@ -275,7 +301,7 @@ async fn fetch_index_stats(pool: &Pool<Postgres>) -> Result<Vec<IndexStatRow>, C
             is_unique: row.get("indisunique"),
             enforces_constraint: row.get("enforces_constraint"),
             is_expression: row.get("is_expression"),
-            is_partial: row.get("indispartial"),
+            is_partial: row.get("is_partial"),
         });
     }
 
@@ -298,6 +324,7 @@ fn identify_unused_indexes(rows: &[IndexStatRow]) -> Vec<IndexUsageInfo> {
             schema: row.schema.clone(),
             table_name: row.table_name.clone(),
             index_name: row.index_name.clone(),
+            key_columns: row.key_columns.clone(),
             index_size_bytes: row.index_size_bytes,
             index_size_pretty: row.index_size_pretty.clone(),
             scans: row.idx_scan,
@@ -334,6 +361,7 @@ fn identify_low_selectivity_indexes(rows: &[IndexStatRow]) -> Vec<IndexUsageInfo
             schema: row.schema.clone(),
             table_name: row.table_name.clone(),
             index_name: row.index_name.clone(),
+            key_columns: row.key_columns.clone(),
             index_size_bytes: row.index_size_bytes,
             index_size_pretty: row.index_size_pretty.clone(),
             scans: row.idx_scan,
@@ -371,6 +399,7 @@ fn identify_failed_index_only_indexes(rows: &[IndexStatRow]) -> Vec<IndexUsageIn
             schema: row.schema.clone(),
             table_name: row.table_name.clone(),
             index_name: row.index_name.clone(),
+            key_columns: row.key_columns.clone(),
             index_size_bytes: row.index_size_bytes,
             index_size_pretty: row.index_size_pretty.clone(),
             scans: row.idx_scan,
@@ -485,6 +514,7 @@ mod tests {
             schema: "public".into(),
             table_name: "sessions".into(),
             index_name: "sessions_user_id_idx".into(),
+            key_columns: vec!["user_id".into()],
             index_size_bytes: 50 * 1024 * 1024,
             index_size_pretty: "50 MB".into(),
             idx_scan: 100,
