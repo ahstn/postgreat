@@ -1,0 +1,120 @@
+## IV. Automated Maintenance: Tuning Background Workers and Autovacuum
+
+The goal of this section is to tune autovacuum so effectively that the manual maintenance described in [3 - Reactive Maintenance](./3 - Reactive Maintenance - Vaccuming and Bloat.md) is _rarely_ needed. This is the _most critical_ tuning for high-write OLTP workloads.[52]
+
+### A. Autovacuum Worker Configuration
+
+- **`autovacuum_max_workers`:**
+    - **Purpose:** The maximum number of autovacuum processes that can run in parallel.[54]
+    - **Rationale:** The default of 3 is often too low for a server with many active databases and tables.
+    - **Recommendation:** Increase to `5`.[54] For large systems with many vCPUs and fast storage, 5-10 is reasonable.
+
+- **`autovacuum_naptime`:**
+    - **Purpose:** The minimum delay between autovacuum runs _on a given database_.[14] The launcher sleeps for this time, then checks for work.
+    - **Rationale:** The default is `1min`.[14] If you have 60 databases on your instance, the launcher will only wake up and start a worker in a specific database every `1min / 60 = 1 second`.[55]
+    - **Recommendation:** For high-churn systems with many tables, lowering this to `30s` makes autovacuum more responsive.[54]
+
+
+### B. Autovacuum Thresholds: The Key to Taming Bloat
+
+This is the central problem with default autovacuum. A vacuum is triggered when the number of dead tuples exceeds a threshold, calculated by this formula [53]:
+
+`dead_tuples > autovacuum_vacuum_threshold + (autovacuum_vacuum_scale_factor * table_row_count)`
+
+**The Default Problem:**
+- By default, `autovacuum_vacuum_threshold = 50` [14] and `autovacuum_vacuum_scale_factor = 0.2` (i.e., 20% of the table).[57]
+- This percentage-based formula works well for _small_ tables:
+    - **10,000-row table:** Trigger = `50 + (0.2 * 10,000) = 2,050` dead tuples. (Reasonable).
+- It is _catastrophic_ for _large_ tables:
+    - **100-million-row table:** Trigger = `50 + (0.2 * 100,000,000) = 20,000,050` dead tuples.
+    - **1-billion-row table:** Trigger = `50 + (0.2 * 1,000,000,000) = 200,000,050` dead tuples.[54]
+- This means, by default, autovacuum _will not even start_ on a large table until 200 million rows are dead, by which point the table is disastrously bloated.
+
+
+**The Solution: Per-Table Tuning:**
+- The fix is to _disable_ the scale factor (which is only good for small tables) and use a _fixed, absolute threshold_ for large tables.[57]
+- This is done via an `ALTER TABLE` command, _not_ by changing the global default.
+
+**Sample SQL:**
+
+```sql
+-- For a very large, high-churn table:
+-- Disable the 20% scale factor, set a fixed 10,000 row threshold
+ALTER TABLE my_large_table SET (
+  autovacuum_vacuum_scale_factor = 0,
+  autovacuum_vacuum_threshold = 10000
+);
+
+-- Also adjust ANALYZE to run more frequently
+ALTER TABLE my_large_table SET (
+  autovacuum_analyze_scale_factor = 0,
+  autovacuum_analyze_threshold = 5000
+);
+```
+
+### C. Throttling and Resource Management
+
+- **`autovacuum_vacuum_cost_limit` & `autovacuum_vacuum_cost_delay`:**
+    - **Purpose:** These parameters _throttle_ autovacuum to prevent it from consuming too much I/O. Autovacuum accumulates a "cost" for every page it reads or dirties.[58] When it hits the `autovacuum_vacuum_cost_limit`, it _sleeps_ for `autovacuum_vacuum_cost_delay`.[59]
+    - **The Default Problem:** The default `cost_limit` is 200 (when `autovacuum_vacuum_cost_limit = -1`, it inherits `vacuum_cost_limit = 200`).[53] The cost for dirtying a page is 20.57 This means the autovacuum worker _sleeps after processing only 10 dirty pages_ (a mere 80 KiB).[57]
+    - **Rationale:** The default throttling is so aggressive that autovacuum _cannot keep up_ with any modern, write-intensive workload.
+    - **Recommendation:** Do _not_ lower `cost_delay` (the sleep time), as that can saturate I/O. Instead, _increase_ the `cost_limit` (the amount of work done _before_ sleeping).
+    - **Setting:** `autovacuum_vacuum_cost_limit = 2000` (10x the default).[15] This allows the worker to run 10x longer before its 2ms nap, making it far more effective.
+
+- **`autovacuum_work_mem`:**
+    - **Purpose:** Sets the memory for _each_ autovacuum worker process.[9]
+    - **Rationale:** As noted in I.A.[4], this _must_ be set explicitly to avoid inheriting a multi-gigabyte `maintenance_work_mem`.
+    - **Recommendation:** `autovacuum_work_mem = 512MB`.[9]
+
+
+### D. Monitoring Autovacuum Activity
+
+- **`pg_stat_progress_vacuum`:**
+    - **Purpose:** This view shows _live, real-time_ information about vacuum and autovacuum processes _that are currently running_.[50]
+    - **Use:** This is the primary tool to debug a _stuck_ vacuum. It shows the `pid`, the table being vacuumed, and the `phase` (e.g., "scanning heap", "vacuuming indexes", "truncating heap").[50]
+
+- **`pg_stat_user_tables`:**
+    - **Purpose:** This view shows the _results_ and _history_ of autovacuum.
+    - **Use:** Check `n_dead_tup` (is it trending down?) and `last_autovacuum` / `last_autoanalyze` (when did it last run?) to confirm autovacuum is running successfully.[62]
+
+[1]: https://www.percona.com/blog/tuning-postgresql-database-parameters-to-optimize-performance/
+[2]: https://aws.amazon.com/compare/the-difference-between-olap-and-oltp/
+[3]: https://www.postgresql.org/docs/current/runtime-config-resource.html
+[4]: https://www.mydbops.com/blog/postgresql-parameter-tuning-best-practices
+[5]: https://www.tigerdata.com/learn/postgresql-performance-tuning-key-parameters
+[6]: https://vladmihalcea.com/postgresql-performance-tuning-settings/
+[8]: https://www.postgresql.org/docs/current/runtime-config-wal.html
+[9]: https://www.crunchydata.com/blog/tuning-your-postgres-database-for-high-write-loads
+[10]: https://www.geeksforgeeks.org/postgresql/postgresql-memory-management/
+[11]: https://dev.to/sudo_anuj/mastering-postgresql-performance-linux-tuning-and-database-optimization-2dk8
+[12]: https://medium.com/@jramcloud1/08-postgresql-17-complete-tuning-guide-for-vacuum-autovacuum-aa36b945a7cf
+[13]: https://reintech.io/blog/postgresql-database-tuning-olap-vs-oltp
+[14]: https://aws.amazon.com/blogs/database/understanding-autovacuum-in-amazon-rds-for-postgresql-environments/
+[15]: https://pganalyze.com/blog/5mins-postgres-tuning-vacuum-autovacuum
+[16]: https://www.instaclustr.com/education/postgresql/postgresql-tuning-6-things-you-can-do-to-improve-db-performance/
+[17]: https://www.tigerdata.com/learn/postgresql-performance-tuning-key-parameters
+[18]: https://www.postgresql.org/docs/current/runtime-config-wal.html
+[19]: https://www.crunchydata.com/blog/tuning-your-postgres-database-for-high-write-loads
+[20]: https://dev.to/shiviyer/how-does-the-wrong-checkpointing-configuration-in-postgresql-affect-the-performance-31d8
+[21]: https://www.enterprisedb.com/blog/tuning-maxwalsize-postgresql
+[27]: https://vladmihalcea.com/postgresql-performance-tuning-settings/
+[29]: https://shaneborden.com/2022/12/27/tuning-the-postgresql-effective_io_concurrency-parameter/
+[31]: https://www.bytebase.com/blog/postgres-create-index-concurrently/
+[32]: https://dev.to/digitalpollution/overview-of-postgresql-indexing-lpi
+[33]: https://www.postgresql.org/docs/current/sql-createindex.html
+[34]: https://www.alexstoica.com/blog/create-index-concurrently-locks
+[35]: https://www.postgresql.org/docs/current/indexes-partial.html
+[36]: https://stackoverflow.com/questions/18915945/indexing-items-marked-as-deleted
+[37]: https://medium.com/@sjksingh/indexing-isnt-free-a-playbook-for-surviving-over-indexing-in-postgresql-07c7a07299c8
+[38]: https://www.crunchydata.com/blog/postgres-indexing-when-does-brin-win
+[39]: https://www.cybertec-postgresql.com/en/btree-vs-brin-2-options-for-indexing-in-postgresql-data-warehouses/
+[40]: https://www.reddit.com/r/PostgreSQL/comments/ujq2wg/speeding_up_an_expensive_postgresql_query_btree/
+[41]: https://stackoverflow.com/questions/35466173/performance-effect-of-include-column-in-index
+[42]: https://www.postgresql.org/docs/current/routine-vacuuming.html
+[43]: https://support.atlassian.com/atlassian-knowledge-base/kb/optimize-and-improve-postgresql-performance-with-vacuum-analyze-and-reindex/
+[44]: https://medium.com/@nakulmitra2114/postgresql-performance-optimization-cleaning-dead-tuples-reindexing-9b1346408b97
+[45]: https://dev.to/sandeepkumardev/how-to-handle-dead-tuples-in-postgresql-54m1
+[46]: https://www.postgresql.fastware.com/pzone/2025-03-improving-postgresql-efficiency-by-handling-dead-tuples
+[47]: https://www.postgresql.org/docs/current/sql-vacuum.html
+[48]: https://www.reddit.com/r/PostgreSQL/comments/1dmfohx/vacuum_full_analyze_much_better_than_vacuum/
+[49]: https://medium.com/@aminechichi99/the-silent-killer-of-db-performance-demystifying-table-bloat-in-postgresql-84773ddaf078
