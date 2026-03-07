@@ -121,6 +121,7 @@ enum Commands {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    postgreat::config::load_dotenv_files_from_cli_args(std::env::args())?;
     let cli = Cli::parse();
 
     // Initialize logging

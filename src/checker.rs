@@ -34,7 +34,7 @@ impl ConfigChecker {
 
         let pool = PgPoolOptions::new()
             .max_connections(5)
-            .connect(&config.connection_string())
+            .connect_with(config.connection_options())
             .await
             .context(ConnectionSnafu)?;
 

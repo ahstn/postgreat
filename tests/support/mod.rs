@@ -2,7 +2,10 @@
 
 use assert_cmd::{cargo::cargo_bin_cmd, Command};
 use serde_json::{json, Value};
-use sqlx::{postgres::PgPoolOptions, raw_sql, Pool, Postgres};
+use sqlx::{
+    postgres::{PgConnectOptions, PgPoolOptions},
+    raw_sql, Pool, Postgres,
+};
 use std::env;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use testcontainers_modules::{
@@ -171,21 +174,22 @@ impl TestPostgres {
     pub fn pg_stat_statements_diagnostics(&self, db: &TestDatabase) -> Value {
         self.runtime.block_on(async {
             let pool = self.pool_for_role(db, TestRole::Admin).await;
-            let max_entries: i64 = sqlx::query_scalar(
-                "SELECT current_setting('pg_stat_statements.max')::bigint",
+            let max_entries: i64 =
+                sqlx::query_scalar("SELECT current_setting('pg_stat_statements.max')::bigint")
+                    .fetch_one(&pool)
+                    .await
+                    .expect("pg_stat_statements.max should be readable");
+            let statement_count: i64 =
+                sqlx::query_scalar("SELECT count(*)::bigint FROM pg_stat_statements")
+                    .fetch_one(&pool)
+                    .await
+                    .expect("pg_stat_statements count should be readable");
+            let deallocations: i64 = sqlx::query_scalar(
+                "SELECT COALESCE(dealloc, 0)::bigint FROM pg_stat_statements_info",
             )
             .fetch_one(&pool)
             .await
-            .expect("pg_stat_statements.max should be readable");
-            let statement_count: i64 = sqlx::query_scalar("SELECT count(*)::bigint FROM pg_stat_statements")
-                .fetch_one(&pool)
-                .await
-                .expect("pg_stat_statements count should be readable");
-            let deallocations: i64 =
-                sqlx::query_scalar("SELECT COALESCE(dealloc, 0)::bigint FROM pg_stat_statements_info")
-                    .fetch_one(&pool)
-                    .await
-                    .expect("pg_stat_statements_info should be readable");
+            .expect("pg_stat_statements_info should be readable");
             json!({
                 "pg_stat_statements_max": max_entries,
                 "statement_count": statement_count,
@@ -195,25 +199,33 @@ impl TestPostgres {
     }
 
     pub fn analyze_command(&self, db: &TestDatabase, role: TestRole) -> Command {
-        let mut command = cargo_bin_cmd!("postgreat");
         let credentials = db.credentials(role);
-        command.args([
-            "--format",
-            "json",
-            "analyze",
-            "--host",
-            db.host(),
-            "--port",
-            &db.port().to_string(),
-            "--database",
-            db.name(),
-            "--username",
-            credentials.0,
-            "--password",
-            credentials.1,
-            "--compute",
-            "8vCPU-64GB",
-        ]);
+        self.analyze_command_with_credentials(db, credentials.0, credentials.1)
+    }
+
+    pub fn analyze_command_with_credentials(
+        &self,
+        db: &TestDatabase,
+        username: &str,
+        password: &str,
+    ) -> Command {
+        let mut command = cargo_bin_cmd!("postgreat");
+        command
+            .arg("--format")
+            .arg("json")
+            .arg("analyze")
+            .arg("--host")
+            .arg(db.host())
+            .arg("--port")
+            .arg(db.port().to_string())
+            .arg("--database")
+            .arg(db.name())
+            .arg("--username")
+            .arg(username)
+            .arg("--password")
+            .arg(password)
+            .arg("--compute")
+            .arg("8vCPU-64GB");
         command
     }
 
@@ -263,29 +275,28 @@ impl TestPostgres {
         });
     }
 
-    async fn admin_pool(&self, database: &str) -> Pool<Postgres> {
-        let url = format!(
-            "postgres://{}:{}@{}:{}/{}",
-            ADMIN_USER, ADMIN_PASSWORD, self.host, self.port, database
+    pub fn create_readonly_role(&self, db: &TestDatabase, role_name: &str, password: &str) {
+        let sql = format!(
+            "CREATE ROLE {role} LOGIN PASSWORD {password};
+             GRANT pg_read_all_settings TO {role};
+             GRANT pg_read_all_stats TO {role};
+             GRANT CONNECT ON DATABASE {database} TO {role};
+             GRANT USAGE ON SCHEMA public TO {role};
+             GRANT SELECT ON ALL TABLES IN SCHEMA public TO {role};",
+            role = quote_ident(role_name),
+            password = quote_literal(password),
+            database = quote_ident(db.name()),
         );
-        PgPoolOptions::new()
-            .max_connections(1)
-            .connect(&url)
-            .await
-            .expect("admin pool should connect")
+        self.execute_sql(db, TestRole::Admin, &sql);
+    }
+
+    async fn admin_pool(&self, database: &str) -> Pool<Postgres> {
+        connect_pool(&self.host, self.port, database, ADMIN_USER, ADMIN_PASSWORD).await
     }
 
     async fn pool_for_role(&self, db: &TestDatabase, role: TestRole) -> Pool<Postgres> {
         let credentials = db.credentials(role);
-        let url = format!(
-            "postgres://{}:{}@{}:{}/{}",
-            credentials.0, credentials.1, db.host, db.port, db.name
-        );
-        PgPoolOptions::new()
-            .max_connections(1)
-            .connect(&url)
-            .await
-            .expect("role pool should connect")
+        connect_pool(&db.host, db.port, &db.name, credentials.0, credentials.1).await
     }
 }
 
@@ -532,6 +543,10 @@ fn quote_ident(value: &str) -> String {
     format!("\"{}\"", value.replace('"', "\"\""))
 }
 
+fn quote_literal(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
 fn sanitize_ident(value: &str) -> String {
     value
         .chars()
@@ -543,4 +558,24 @@ fn sanitize_ident(value: &str) -> String {
             }
         })
         .collect()
+}
+
+async fn connect_pool(
+    host: &str,
+    port: u16,
+    database: &str,
+    username: &str,
+    password: &str,
+) -> Pool<Postgres> {
+    let options = PgConnectOptions::new()
+        .host(host)
+        .port(port)
+        .database(database)
+        .username(username)
+        .password(password);
+    PgPoolOptions::new()
+        .max_connections(1)
+        .connect_with(options)
+        .await
+        .expect("pool should connect")
 }
