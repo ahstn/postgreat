@@ -1,16 +1,31 @@
+branch_whitelist = ["main"]
 from_latest_tag = false
 ignore_merge_commits = false
 ignore_fixup_commits = false
-disable_changelog = true                              # using git-cliff instead
 disable_bump_commit = false
 generate_mono_repository_global_tag = true
 generate_mono_repository_package_tags = true
-branch_whitelist = []
+
 pre = "alpha.*"
 skip_ci = "[skip ci]"
-skip_untracked = false
-pre_bump_hooks = []
-pre_package_bump_hooks = []
-post_package_bump_hooks = []
+skip_untracked = true
 tag_prefix = "v"
-post_bump_hooks = ["git push origin {{version_tag}}"]
+
+post_bump_hooks = [
+    "git push origin {{version_tag}}",
+    "git-cliff --tag v$(cog get-version) --output CHANGELOG.md",
+    'gh release create v$(cog get-version) --notes "$(git-cliff --tag v$(cog get-version) --latest --strip header)"',
+    "cargo release version $(cog get-version) --execute",
+]
+pre_bump_hooks = []
+# Hooks to execute
+pre_package_bump_hooks = []
+
+# Use git-cliff instead (includes PRs in the changelog)
+disable_changelog = true
+
+[changelog]
+remote = "github.com"
+repository = "postgreat"
+owner = "ahstn"
+template = "remote"
