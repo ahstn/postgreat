@@ -1,105 +1,94 @@
 ## IV. Automated Maintenance: Tuning Background Workers and Autovacuum
 
-The goal of this section is to tune autovacuum so effectively that the manual maintenance described in [3 - Reactive Maintenance](./3 - Reactive Maintenance - Vaccuming and Bloat.md) is _rarely_ needed. This is the _most critical_ tuning for high-write OLTP workloads.[52]
+Autovacuum exists to make manual vacuuming the exception rather than the norm. On busy OLTP systems, getting it right is often more important than occasional manual cleanup, but the right settings depend on write rate, table sizes, storage throughput, and PostgreSQL version.[1][2][3][7]
 
-### A. Autovacuum Worker Configuration
+### A. Worker Configuration
+
+- **`autovacuum_worker_slots`:**
+  - **Purpose:** Reserves backend slots for autovacuum workers.[1]
+  - **Current PostgreSQL 18 caveat:** This setting now limits how many autovacuum workers can actually run. If `autovacuum_max_workers` is set higher than the available worker slots, the slots still cap the effective concurrency.[1]
 
 - **`autovacuum_max_workers`:**
-    - **Purpose:** The maximum number of autovacuum processes that can run in parallel.[54]
-    - **Rationale:** The default of 3 is often too low for a server with many active databases and tables.
-    - **Recommendation:** Increase to `5`.[54] For large systems with many vCPUs and fast storage, 5-10 is reasonable.
+  - **Purpose:** Maximum number of autovacuum worker processes that may run at one time.[1]
+  - **Current guidance:** The default is `3`, but raising it is workload-dependent. Increase it only if you have enough I/O, CPU, memory, and worker slots to support more concurrent vacuum activity.[1][2][3][7]
+  - **Practical rule:** Treat higher worker counts as a measured scaling step, not as a universal “set it to 5” rule.
 
 - **`autovacuum_naptime`:**
-    - **Purpose:** The minimum delay between autovacuum runs _on a given database_.[14] The launcher sleeps for this time, then checks for work.
-    - **Rationale:** The default is `1min`.[14] If you have 60 databases on your instance, the launcher will only wake up and start a worker in a specific database every `1min / 60 = 1 second`.[55]
-    - **Recommendation:** For high-churn systems with many tables, lowering this to `30s` makes autovacuum more responsive.[54]
+  - **Purpose:** Minimum delay between autovacuum rounds on a given database.[1]
+  - **Current guidance:** Lower values can make autovacuum more responsive, especially when many hot tables compete for attention, but they also increase background activity.[1][8][9]
+  - **Practical rule:** If you have many databases or many hot tables, shorten this only after confirming that worker capacity and I/O are the real bottlenecks.
 
+### B. Thresholds: When Autovacuum Starts
 
-### B. Autovacuum Thresholds: The Key to Taming Bloat
+Autovacuum does not use a single trigger anymore. Current PostgreSQL distinguishes between update/delete-driven vacuuming and insert-driven vacuuming.[1][2]
 
-This is the central problem with default autovacuum. A vacuum is triggered when the number of dead tuples exceeds a threshold, calculated by this formula [53]:
+- **Update/delete trigger:** vacuuming is driven by `autovacuum_vacuum_threshold + autovacuum_vacuum_scale_factor * table_row_count`, but current PostgreSQL can also cap that trigger with `autovacuum_vacuum_max_threshold`.[1]
+- **Insert trigger:** insert-heavy tables can be vacuumed based on separate `autovacuum_vacuum_insert_threshold` and `autovacuum_vacuum_insert_scale_factor` settings.[1]
 
-`dead_tuples > autovacuum_vacuum_threshold + (autovacuum_vacuum_scale_factor * table_row_count)`
+**What this means in practice:**
+- Older rules of thumb like “a 1 billion row table waits for 200 million dead rows” are no longer correct without accounting for the current cap and the insert-specific triggers.
+- Large hot tables still often need per-table tuning, but the right fix is not always `autovacuum_vacuum_scale_factor = 0`.
+- Current best practice is to tune large churn-heavy tables individually, often by reducing scale factors, setting explicit thresholds, and adjusting analyze thresholds separately.[1][2][3][7]
 
-**The Default Problem:**
-- By default, `autovacuum_vacuum_threshold = 50` [14] and `autovacuum_vacuum_scale_factor = 0.2` (i.e., 20% of the table).[57]
-- This percentage-based formula works well for _small_ tables:
-    - **10,000-row table:** Trigger = `50 + (0.2 * 10,000) = 2,050` dead tuples. (Reasonable).
-- It is _catastrophic_ for _large_ tables:
-    - **100-million-row table:** Trigger = `50 + (0.2 * 100,000,000) = 20,000,050` dead tuples.
-    - **1-billion-row table:** Trigger = `50 + (0.2 * 1,000,000,000) = 200,000,050` dead tuples.[54]
-- This means, by default, autovacuum _will not even start_ on a large table until 200 million rows are dead, by which point the table is disastrously bloated.
-
-
-**The Solution: Per-Table Tuning:**
-- The fix is to _disable_ the scale factor (which is only good for small tables) and use a _fixed, absolute threshold_ for large tables.[57]
-- This is done via an `ALTER TABLE` command, _not_ by changing the global default.
-
-**Sample SQL:**
+**Example per-table tuning pattern:**
 
 ```sql
--- For a very large, high-churn table:
--- Disable the 20% scale factor, set a fixed 10,000 row threshold
 ALTER TABLE my_large_table SET (
-  autovacuum_vacuum_scale_factor = 0,
-  autovacuum_vacuum_threshold = 10000
-);
-
--- Also adjust ANALYZE to run more frequently
-ALTER TABLE my_large_table SET (
-  autovacuum_analyze_scale_factor = 0,
+  autovacuum_vacuum_scale_factor = 0.01,
+  autovacuum_vacuum_threshold = 10000,
+  autovacuum_analyze_scale_factor = 0.005,
   autovacuum_analyze_threshold = 5000
 );
 ```
 
-### C. Throttling and Resource Management
+For especially large insert-heavy tables, also consider the insert-trigger settings instead of tuning only the dead-tuple path.[1]
 
-- **`autovacuum_vacuum_cost_limit` & `autovacuum_vacuum_cost_delay`:**
-    - **Purpose:** These parameters _throttle_ autovacuum to prevent it from consuming too much I/O. Autovacuum accumulates a "cost" for every page it reads or dirties.[58] When it hits the `autovacuum_vacuum_cost_limit`, it _sleeps_ for `autovacuum_vacuum_cost_delay`.[59]
-    - **The Default Problem:** The default `cost_limit` is 200 (when `autovacuum_vacuum_cost_limit = -1`, it inherits `vacuum_cost_limit = 200`).[53] The cost for dirtying a page is 20.57 This means the autovacuum worker _sleeps after processing only 10 dirty pages_ (a mere 80 KiB).[57]
-    - **Rationale:** The default throttling is so aggressive that autovacuum _cannot keep up_ with any modern, write-intensive workload.
-    - **Recommendation:** Do _not_ lower `cost_delay` (the sleep time), as that can saturate I/O. Instead, _increase_ the `cost_limit` (the amount of work done _before_ sleeping).
-    - **Setting:** `autovacuum_vacuum_cost_limit = 2000` (10x the default).[15] This allows the worker to run 10x longer before its 2ms nap, making it far more effective.
+### C. Cost-Based Throttling and Resource Budgets
+
+- **`autovacuum_vacuum_cost_limit` and `autovacuum_vacuum_cost_delay`:**
+  - **Purpose:** These parameters throttle autovacuum so it does not monopolize I/O.[1][4]
+  - **Current guidance:** When `autovacuum_vacuum_cost_limit = -1`, autovacuum inherits `vacuum_cost_limit`. Likewise, `autovacuum_vacuum_cost_delay = -1` inherits `vacuum_cost_delay`.[1]
+  - **Important caveat:** The effective cost budget is balanced across running autovacuum workers, so a simple “set it to `2000` and every worker gets 10x more work” interpretation is not correct once multiple workers are active.[1][4]
+  - **Practical rule:** If autovacuum is falling behind, raise the effective vacuum budget carefully and measure impact. Tune both limit and delay based on storage capacity and workload instead of treating either knob as untouchable.[1][4][3][7]
 
 - **`autovacuum_work_mem`:**
-    - **Purpose:** Sets the memory for _each_ autovacuum worker process.[9]
-    - **Rationale:** As noted in I.A.[4], this _must_ be set explicitly to avoid inheriting a multi-gigabyte `maintenance_work_mem`.
-    - **Recommendation:** `autovacuum_work_mem = 512MB`.[9]
+  - **Purpose:** Memory budget for each autovacuum worker.[1]
+  - **Current guidance:** Set this explicitly when `maintenance_work_mem` is large enough that inheritance would over-allocate memory. Size it within the overall server memory budget and expected number of workers.[1][3][7]
+  - **Practical rule:** Avoid fixed global recommendations like `512MB` without checking table sizes and total concurrent autovacuum memory demand.
 
-
-### D. Monitoring Autovacuum Activity
+### D. Monitoring Whether Autovacuum Is Working
 
 - **`pg_stat_progress_vacuum`:**
-    - **Purpose:** This view shows _live, real-time_ information about vacuum and autovacuum processes _that are currently running_.[50]
-    - **Use:** This is the primary tool to debug a _stuck_ vacuum. It shows the `pid`, the table being vacuumed, and the `phase` (e.g., "scanning heap", "vacuuming indexes", "truncating heap").[50]
+  - **Use:** Shows live progress for currently running vacuum and autovacuum processes, including phase information.[5]
+  - **Best for:** Determining whether a vacuum is progressing, stuck behind locks, or spending most of its time in heap scan, index cleanup, or truncation phases.[5]
 
 - **`pg_stat_user_tables`:**
-    - **Purpose:** This view shows the _results_ and _history_ of autovacuum.
-    - **Use:** Check `n_dead_tup` (is it trending down?) and `last_autovacuum` / `last_autoanalyze` (when did it last run?) to confirm autovacuum is running successfully.[62]
+  - **Use:** Shows approximate live and dead tuple counts plus `last_autovacuum` and `last_autoanalyze` timestamps.[6]
+  - **Best for:** First-pass triage of which tables autovacuum may be neglecting.
+  - **Important caveat:** `n_dead_tup` is an estimate, not a precise physical bloat measurement.[6]
 
+**Practical rule:** Watch trends, not single snapshots. The goal is not “zero dead tuples”; it is keeping dead tuples and table growth under control while maintaining foreground query performance.
 
 ## References
 
-- [Tuning PostgreSQL for Write Heavy Workloads - CloudRaft][52]
-- [Autovacuum Tuning Basics for Optimizing Performance - Best Practices - EDB Postgres AI][53]
-- [08-PostgreSQL 17: Complete Tuning Guide for VACUUM & AUTOVACUUM - Medium][54]
-- [Autovacuum Tuning - Azure Database for PostgreSQL | Microsoft Learn][55]
-- [Tuning Autovacuum in PostgreSQL and Autovacuum Internals - Percona][56]
-- [5mins of Postgres E12: The basics of tuning VACUUM and ][57]
-- [How does the VACUUM cost model work? - pganalyze][58]
-- [What is autovacuum_vacuum_cost_delay in autovacuum in PostgreSQL? - Stack Overflow][59]
-- [Find bloated tables and indexes in PostgreSQL without extensions ][62]
+- [PostgreSQL 18 Documentation: Vacuuming / autovacuum settings][1]
+- [PostgreSQL 18 Documentation: Routine Vacuuming][2]
+- [Percona: Tuning autovacuum in PostgreSQL][3]
+- [pganalyze: How the VACUUM cost model works][4]
+- [PostgreSQL 18 Documentation: Progress Reporting][5]
+- [PostgreSQL 18 Documentation: Monitoring Stats][6]
+- [EDB: Autovacuum tuning basics][7]
+- [AWS: Understanding autovacuum in Amazon RDS for PostgreSQL][8]
+- [Azure: Autovacuum tuning for PostgreSQL Flexible Server][9]
+- [Crunchy Data: Tuning Postgres for high write loads][10]
 
-
-[4]: https://www.mydbops.com/blog/postgresql-parameter-tuning-best-practices
-[9]: https://www.crunchydata.com/blog/tuning-your-postgres-database-for-high-write-loads
-[14]: https://aws.amazon.com/blogs/database/understanding-autovacuum-in-amazon-rds-for-postgresql-environments/
-[52]: https://www.cloudraft.io/blog/tuning-postgresql-for-write-heavy-workloads
-[53]: https://www.enterprisedb.com/blog/autovacuum-tuning-basics
-[54]: https://medium.com/@jramcloud1/08-postgresql-17-complete-tuning-guide-for-vacuum-autovacuum-aa36b945a7cf
-[55]: https://learn.microsoft.com/en-us/azure/postgresql/flexible-server/how-to-autovacuum-tuning
-[56]: https://www.percona.com/blog/tuning-autovacuum-in-postgresql-and-autovacuum-internals/
-[57]: https://pganalyze.com/blog/5mins-postgres-tuning-vacuum-autovacuum
-[58]: https://pganalyze.com/docs/vacuum-advisor/how-does-the-vacuum-cost-model-work
-[59]: https://stackoverflow.com/questions/63671302/what-is-autovacuum-vacuum-cost-delay-in-autovacuum-in-postgresql
-[62]: https://dba.stackexchange.com/questions/302507/find-bloated-tables-and-indexes-in-postgresql-without-extensions
+[1]: https://www.postgresql.org/docs/current/runtime-config-vacuum.html
+[2]: https://www.postgresql.org/docs/current/routine-vacuuming.html
+[3]: https://www.percona.com/blog/tuning-autovacuum-in-postgresql-and-autovacuum-internals/
+[4]: https://pganalyze.com/docs/vacuum-advisor/how-does-the-vacuum-cost-model-work
+[5]: https://www.postgresql.org/docs/current/progress-reporting.html
+[6]: https://www.postgresql.org/docs/current/monitoring-stats.html
+[7]: https://www.enterprisedb.com/blog/autovacuum-tuning-basics
+[8]: https://aws.amazon.com/blogs/database/understanding-autovacuum-in-amazon-rds-for-postgresql-environments/
+[9]: https://learn.microsoft.com/en-us/azure/postgresql/flexible-server/how-to-autovacuum-tuning
+[10]: https://www.crunchydata.com/blog/tuning-your-postgres-database-for-high-write-loads
