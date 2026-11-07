@@ -6,6 +6,13 @@ PostGreat is a Rust-based PostgreSQL configuration analyzer that provides eviden
 
 ## Work Log
 
+### 2026-11-07 - Documentation fact-check and refresh
+- Audited every factual claim in `docs/` (288 claims) against the PostgreSQL 14 to 18 manuals, pooler project sources, and the code at `c0cfa0b`. Results, sources, and a defaults-by-version table are in `docs/audit/`.
+- Rewrote the core playbooks (docs 1, 2, 3, 4, 6), `Example DB Scenario.md`, `Helpful Commands.md`, and the poolers overview with inline version notes and links pinned to `/docs/18/` and `/docs/14/`. Replaced the duplicate vacuum guide with a pointer.
+- Ran every SQL block, old and new, on PostgreSQL 14.24, 15.19, 16.15, 17.11, and 18.6. Fixed queries that failed (bloat hit list, mixed-case table names) or listed indexes that are unsafe to drop.
+- Corrected line references in the architecture pages and rewrote the internal reviews as current assessments.
+- Updated `README.md`: supported versions are now 14 to 18, the category list matches the code, the dead example-report link is gone, and known rule caveats link to `docs/audit/code-followups.md`.
+- No Rust code changed. Analyzer rules that disagree with the manual (for example `autovacuum_vacuum_cost_limit = -1` always Critical, the `checkpoint_completion_target` default, `effective_io_concurrency` on PostgreSQL 18, the 8GB `shared_buffers` cap, and the failed index-only scan ratio) are listed in `docs/audit/code-followups.md` for follow-up.
 ### 2026-03-07 - Env-backed config and dotenv support
 - Added startup dotenv loading so `analyze`, `workload`, and other env-backed CLI flags can read `POSTGRES_*` from a `.env` file before clap validates arguments.
 - Added quoted `"{env:VAR_NAME}"` placeholders for YAML config files, with typed resolution for strings, numeric fields, and enum fields plus clear errors for missing or invalid env values.
