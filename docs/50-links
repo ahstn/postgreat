@@ -1,3 +1,16 @@
+# Reference Links
+
+Numbered reference-link definitions used by the tuning docs. Each definition keeps its number so existing `[n]` citations still resolve. Two URLs were replaced on 2026-11-07: [16] (moved) and [41] (was about SQL Server). The table below records the status and reliability of each link, checked 2026-11-07.
+
+**Status:** OK (loads, HTTP 200), Redirect (moves to a new URL), Blocked (refuses automated clients, content not verified), Dead, Paywalled.
+**Type:** primary (PostgreSQL project or AWS product docs), vendor (blog of a company selling PostgreSQL products or services), blog (individual author), forum (Q&A or discussion).
+
+**Notes:**
+- Links to `postgresql.org/docs/current/` follow the newest release. They showed PostgreSQL 18 on 2026-11-07 and will move to PostgreSQL 19 when it is released (planned 2026-11-19). For version-specific claims, cite a pinned URL such as `/docs/14/` or `/docs/18/`.
+- Duplicates: [17] is the same URL as [5], [18] as [8], [19] as [9], and [27] as [6]. Prefer the lower number in new text.
+- Numbers 7, 22 to 26, 28, 30 and 51 to 61, 63 to 75 are not defined here.
+- Secondary sources (vendor, blog, forum) are useful for explanation, but check their numbers against the manual. Several of them give fixed values (for example `effective_io_concurrency = 200` or `random_page_cost = 1.1`) that should be treated as starting points to test.
+
 [1]: https://www.percona.com/blog/tuning-postgresql-database-parameters-to-optimize-performance/
 [2]: https://aws.amazon.com/compare/the-difference-between-olap-and-oltp/
 [3]: https://www.postgresql.org/docs/current/runtime-config-resource.html
@@ -12,7 +25,7 @@
 [13]: https://reintech.io/blog/postgresql-database-tuning-olap-vs-oltp
 [14]: https://aws.amazon.com/blogs/database/understanding-autovacuum-in-amazon-rds-for-postgresql-environments/
 [15]: https://pganalyze.com/blog/5mins-postgres-tuning-vacuum-autovacuum
-[16]: https://www.instaclustr.com/education/postgresql/postgresql-tuning-6-things-you-can-do-to-improve-db-performance/
+[16]: https://www.instaclustr.com/education/postgresql/postgresql-tuning-10-things-you-can-do-to-improve-db-performance/
 [17]: https://www.tigerdata.com/learn/postgresql-performance-tuning-key-parameters
 [18]: https://www.postgresql.org/docs/current/runtime-config-wal.html
 [19]: https://www.crunchydata.com/blog/tuning-your-postgres-database-for-high-write-loads
@@ -30,7 +43,7 @@
 [38]: https://www.crunchydata.com/blog/postgres-indexing-when-does-brin-win
 [39]: https://www.cybertec-postgresql.com/en/btree-vs-brin-2-options-for-indexing-in-postgresql-data-warehouses/
 [40]: https://www.reddit.com/r/PostgreSQL/comments/ujq2wg/speeding_up_an_expensive_postgresql_query_btree/
-[41]: https://stackoverflow.com/questions/35466173/performance-effect-of-include-column-in-index
+[41]: https://www.postgresql.org/docs/18/indexes-index-only-scans.html
 [42]: https://www.postgresql.org/docs/current/routine-vacuuming.html
 [43]: https://support.atlassian.com/atlassian-knowledge-base/kb/optimize-and-improve-postgresql-performance-with-vacuum-analyze-and-reindex/
 [44]: https://medium.com/@nakulmitra2114/postgresql-performance-optimization-cleaning-dead-tuples-reindexing-9b1346408b97
@@ -39,3 +52,57 @@
 [47]: https://www.postgresql.org/docs/current/sql-vacuum.html
 [48]: https://www.reddit.com/r/PostgreSQL/comments/1dmfohx/vacuum_full_analyze_much_better_than_vacuum/
 [49]: https://medium.com/@aminechichi99/the-silent-killer-of-db-performance-demystifying-table-bloat-in-postgresql-84773ddaf078
+[50]: https://www.postgresql.org/docs/current/progress-reporting.html
+[62]: https://www.postgresql.org/docs/current/monitoring-stats.html
+[76]: https://www.postgresql.org/docs/current/sql-reindex.html
+[77]: https://www.postgresql.org/docs/current/pgstattuple.html
+
+## Link Status
+
+| **Ref** | **Title** | **Status** | **Type** | **Reliability notes** |
+| --- | --- | --- | --- | --- |
+| [1] | Percona: PostgreSQL Performance Tuning Guide | OK | vendor | Reliable PostgreSQL vendor. Page is updated over time, so check the date. |
+| [2] | AWS: OLTP vs OLAP | OK | vendor | General background only. No PostgreSQL settings. |
+| [3] | PostgreSQL docs: Resource Consumption | OK | primary | Authoritative. Unpinned (`current`); use `/docs/<version>/` for version claims. |
+| [4] | Mydbops: PostgreSQL Parameter Tuning Best Practices | OK | vendor | Consulting blog. Rules of thumb; verify against the manual. |
+| [5] | Tiger Data: PostgreSQL Performance Tuning, Key Parameters | OK | vendor | Timescale (Tiger Data) learning page. Reasonable overview. |
+| [6] | Vlad Mihalcea: PostgreSQL Performance Tuning Settings | OK | blog | Well-known author, but gives fixed values (for example SSD settings). Treat as starting points. |
+| [8] | PostgreSQL docs: Write Ahead Log | OK | primary | Authoritative. Unpinned. |
+| [9] | Crunchy Data: Tuning Your Postgres Database for High Write Loads | OK | vendor | Reliable vendor. Published 2020-10-14; check for later default changes (for example `checkpoint_completion_target` became 0.9 in PostgreSQL 14). |
+| [10] | GeeksforGeeks: PostgreSQL Memory Management | OK | blog | Low reliability. Generic tutorial content. Prefer [3]. |
+| [11] | DEV: Mastering PostgreSQL Performance, Linux Tuning | OK | blog | Community post. Low to medium reliability; verify values. |
+| [12] | Medium: PostgreSQL 17 Complete Tuning Guide for VACUUM and AUTOVACUUM | OK | blog | Published 2025-08-31. Not member-only when checked. Verify against [42] and the vacuum settings page. |
+| [13] | Reintech: PostgreSQL Tuning for OLAP vs OLTP | OK | blog | Low reliability. Generic advice. |
+| [14] | AWS Database Blog: Understanding autovacuum in Amazon RDS for PostgreSQL | OK | vendor | Reliable. RDS-specific parts (parameter groups, RDS defaults) do not apply to self-managed PostgreSQL. |
+| [15] | pganalyze: 5mins of Postgres E12, tuning VACUUM and autovacuum | OK | vendor | Reliable PostgreSQL vendor. |
+| [16] | Instaclustr: PostgreSQL tuning, 10 things you can do | OK | vendor | URL updated 2026-11-07. The old "6 things" URL redirected here. Medium reliability. |
+| [17] | Duplicate of [5] | OK | vendor | Same URL as [5]. |
+| [18] | Duplicate of [8] | OK | primary | Same URL as [8]. |
+| [19] | Duplicate of [9] | OK | vendor | Same URL as [9]. |
+| [20] | DEV: Wrong checkpointing configuration and performance | OK | blog | Low to medium reliability. Prefer [8] and [21]. |
+| [21] | EDB: Tuning max_wal_size in PostgreSQL | OK | vendor | Reliable PostgreSQL vendor. |
+| [27] | Duplicate of [6] | OK | blog | Same URL as [6]. |
+| [29] | Shane Borden: Tuning effective_io_concurrency | OK | blog | Author works on cloud PostgreSQL. Published 2022, before PostgreSQL 18 changed the default to 16 and added asynchronous I/O. |
+| [31] | Bytebase: Postgres CREATE INDEX CONCURRENTLY | OK | vendor | Medium reliability. Prefer [33] for locking rules. |
+| [32] | DEV: Overview of PostgreSQL indexing | OK | blog | Low to medium reliability. Background only. |
+| [33] | PostgreSQL docs: CREATE INDEX | OK | primary | Authoritative. Unpinned. |
+| [34] | Alex Stoica: CREATE INDEX CONCURRENTLY and its locks | OK | blog | Individual blog. Check against [33]. |
+| [35] | PostgreSQL docs: Partial Indexes | OK | primary | Authoritative. Unpinned. |
+| [36] | Stack Overflow: Indexing items marked as deleted | OK | forum | Useful example of partial indexes. Answers are not reviewed; check against [35]. |
+| [37] | Medium: Indexing Isn't Free | OK | blog | Published 2025-05-03. Not member-only when checked. Medium reliability. |
+| [38] | Crunchy Data: When Does BRIN Win? | OK | vendor | Reliable. Author is a long-time PostGIS developer. |
+| [39] | CYBERTEC: btree vs BRIN | OK | vendor | Reliable PostgreSQL vendor. |
+| [40] | Reddit r/PostgreSQL: Speeding up an expensive query, btree | Blocked | forum | Returns HTTP 403 to automated clients, so content was not verified. Forum discussion; low reliability as a citation. |
+| [41] | PostgreSQL 18 docs: Index-Only Scans and Covering Indexes | OK | primary | Authoritative, pinned to 18 (same content on 14). Replaced a Stack Overflow question about SQL Server `INCLUDE` columns on 2026-11-07. |
+| [42] | PostgreSQL docs: Routine Vacuuming | OK | primary | Authoritative. Unpinned. |
+| [43] | Atlassian KB: VACUUM, ANALYZE and REINDEX | OK | vendor | Written for Atlassian products on PostgreSQL. General advice only. |
+| [44] | Medium: Cleaning Dead Tuples and Reindexing | Redirect | blog | Redirects to towardsdev.com (same article). Published 2025-03-28. Low to medium reliability. |
+| [45] | DEV: Dead Tuples in PostgreSQL | OK | blog | Low reliability. Background only. |
+| [46] | Fujitsu: Improving PostgreSQL efficiency by handling dead tuples | OK | vendor | Reliable PostgreSQL vendor. Published 2025-03. |
+| [47] | PostgreSQL docs: VACUUM | OK | primary | Authoritative. Unpinned. |
+| [48] | Reddit r/PostgreSQL: VACUUM FULL ANALYZE much better than VACUUM | Blocked | forum | Returns HTTP 403 to automated clients, so content was not verified. Anecdotal; do not use as evidence for `VACUUM FULL`. |
+| [49] | Medium: Demystifying Table Bloat in PostgreSQL | OK | blog | Published 2023-12-30. Not member-only when checked. Medium reliability. |
+| [50] | PostgreSQL docs: Progress Reporting | OK | primary | Authoritative. Unpinned. Available views differ by version. |
+| [62] | PostgreSQL docs: The Cumulative Statistics System | OK | primary | Authoritative. Unpinned. PostgreSQL 14 has a different page, "The Statistics Collector". |
+| [76] | PostgreSQL docs: REINDEX | OK | primary | Authoritative. Unpinned. |
+| [77] | PostgreSQL docs: pgstattuple | OK | primary | Authoritative. Unpinned. |
